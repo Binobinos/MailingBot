@@ -25,6 +25,10 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 broadcast_all_state = {}      # key = admin_id -> шаги мастера
 
+# сохраняем текст для каждой группы, когда запускаем broadcastALL
+broadcast_all_text = {}        # key = (user_id, group_id) -> text
+
+
 
 scheduler = AsyncIOScheduler()
 
@@ -41,10 +45,29 @@ bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 auto_client = TelegramClient(StringSession(), API_ID, API_HASH)
 
 def broadcast_status_emoji(user_id: int, group_id: int) -> str:
-    """Возвращает ✅ если в группе работает любая рассылка, иначе ❌"""
-    jid_all  = f"broadcastALL_{user_id}_{group_id}"
-    jid_one  = f"broadcast_{user_id}_{group_id}"
-    return "✅" if scheduler.get_job(jid_all) or scheduler.get_job(jid_one) else "❌"
+    """
+    ✅ — если запущена либо персональная (`broadcast_...`)
+         либо массовая (`broadcastALL_...`) рассылка для группы
+    """
+    jid_one = f"broadcast_{user_id}_{group_id}"
+    jid_all = f"broadcastALL_{user_id}_{group_id}"
+    return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
+
+
+def get_active_broadcast_groups(user_id: int) -> set[int]:
+    """
+    Возвращает множество group_id, для которых
+    есть job вида  broadcastALL_<user_id>_<group_id>
+    """
+    active = set()
+    for job in scheduler.get_jobs():
+        if job.id.startswith(f"broadcastALL_{user_id}_"):
+            try:
+                gid = int(job.id.split("_")[2])
+                active.add(gid)
+            except (IndexError, ValueError):
+                continue
+    return active
 
 
 @bot.on(events.NewMessage(pattern="/start"))
@@ -168,15 +191,11 @@ async def my_accounts(event):
 
 @bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("account_info_")))
 async def handle_account_button(event):
-    # id выбранного аккаунта
     user_id = int(event.data.decode().split("_")[2])
 
-    # --- берём строку сессии из БД ---
     row = cursor.execute(
-        "SELECT session_string FROM sessions WHERE user_id = ?",
-        (user_id,)
+        "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
     ).fetchone()
-
     if not row:
         await event.respond("⚠ Не удалось найти аккаунт.")
         return
@@ -185,30 +204,26 @@ async def handle_account_button(event):
     client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
     await client.connect()
     try:
-        # --- общая инфа об аккаунте ---
-        me = await client.get_me()
+        me       = await client.get_me()
         username = me.first_name or "Без имени"
         phone    = me.phone or "Не указан"
 
-        # --- собираем группы + флаги ✅/❌ ---
-        dialogs = await client.get_dialogs()
-        groups  = [d for d in dialogs if d.is_group]
+        dialogs  = await client.get_dialogs()
+        groups   = [d for d in dialogs if d.is_group]
+
+        active_gids = get_active_broadcast_groups(user_id)
 
         if groups:
             lines = [
-                f"{broadcast_status_emoji(user_id, g.id)} {g.name}"
+                f"{'✅' if g.id in active_gids else '❌'} {g.name}"
                 for g in groups
             ]
             group_list = "\n".join(lines)
         else:
             group_list = "У пользователя нет групп."
 
-        # --- индикатор «массовой» рассылки ---
-        mass_active = "🟢 ВКЛ" if any(
-            scheduler.get_job(f"broadcastALL_{user_id}_{g.id}") for g in groups
-        ) else "🔴 ВЫКЛ"
+        mass_active = "🟢 ВКЛ" if active_gids else "🔴 ВЫКЛ"
 
-        # --- inline-кнопки ---
         buttons = [
             [
                 Button.inline("📋 Список групп", f"listOfgroups_{user_id}"),
@@ -224,11 +239,9 @@ async def handle_account_button(event):
             f"📝 **Список групп:**\n{group_list}",
             buttons=buttons
         )
-
-    except Exception as e:
-        await event.respond(f"⚠ Ошибка при загрузке информации: {e}")
     finally:
         await client.disconnect()
+
 
 
 # ---------- МЕНЮ «Рассылка во все чаты» ----------
@@ -325,8 +338,7 @@ async def handle_groups_list(event):
     user_id = int(event.data.decode().split("_")[1])
 
     row = cursor.execute(
-        "SELECT session_string FROM sessions WHERE user_id = ?",
-        (user_id,)
+        "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
     ).fetchone()
     if not row:
         await event.respond("⚠ Не удалось найти аккаунт.")
@@ -337,87 +349,108 @@ async def handle_groups_list(event):
     await client.connect()
     try:
         dialogs = await client.get_dialogs()
+        active  = get_active_broadcast_groups(user_id)
 
-        group_buttons = []
+        buttons = []
         for d in dialogs:
-            if not d.is_group:
-                continue
-            mark  = broadcast_status_emoji(user_id, d.id)
-            title = f"{mark} {d.name}"
-            group_buttons.append(
-                Button.inline(title, f"group_info_{user_id}_{d.id}")
-            )
+            if d.is_group:
+                mark = "✅" if d.id in active else "❌"
+                buttons.append(
+                    [Button.inline(f"{mark} {d.name}", f"group_info_{user_id}_{d.id}")]
+                )
 
-        if not group_buttons:
+        if not buttons:
             await event.respond("У аккаунта нет групп.")
             return
 
-        await event.respond(
-            "📋 Список групп, в которых вы состоите:",
-            buttons=group_buttons
-        )
-
+        await event.respond("📋 Список групп, в которых вы состоите:", buttons=buttons)
     finally:
         await client.disconnect()
 
 
 broadcast_jobs = {}
 
+# ---------- меню конкретной группы ----------
 @bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("group_info_")))
 async def handle_group_info(event):
-    data = event.data.decode()
-    user_id, group_id = map(int, data.split("_")[2:])
+    # в callback-данных: group_info_<user_id>_<group_id>
+    user_id, group_id = map(int, event.data.decode().split("_")[2:])
 
-    cursor.execute("SELECT session_string FROM sessions WHERE user_id = ?", (user_id,))
-    session_string_row = cursor.fetchone()
-    session_string = session_string_row[0] if session_string_row else None
-
-    if session_string:
-        session = StringSession(session_string)
-        client = TelegramClient(session, API_ID, API_HASH)
-        await client.connect()
-        try:
-            group = await client.get_entity(group_id)
-
-            me = await client.get_me()
-            account_name = me.first_name if me.first_name else "Без имени"
-
-            cursor.execute("SELECT broadcast_text, interval_minutes FROM broadcasts WHERE user_id = ? AND group_id = ?", (user_id, group_id))
-            broadcast_data = cursor.fetchone()
-
-            if broadcast_data:
-                broadcast_text, interval_minutes = broadcast_data
-                text_display = f"📩 **Текущий текст рассылки:**\n{broadcast_text}\n⏳ **Интервал:** {interval_minutes} минут"
-            else:
-                text_display = "📩 **Текущий текст рассылки:** ❌ Не задан\n⏳ **Интервал:** ❌ Не задан"
-
-            broadcast_job = None
-            for job in scheduler.get_jobs():
-                if job.id == f"broadcast_{user_id}_{group_id}":
-                    broadcast_job = job
-                    break
-
-            if broadcast_job and broadcast_job.next_run_time:
-                status = "✅ Активна"
-            else:
-                status = "⛔ Остановлена"
-
-            keyboard = [
-                [Button.inline("📝 Текст и Интервал рассылки", f"broadcasttextinterval_{user_id}_{group_id}")],
-                [Button.inline("✅ Начать/возобновить рассылку", f"startresumebroadcast_{user_id}_{group_id}")],
-                [Button.inline("⛔ Остановить рассылку", f"stop_accountbroadcast_{user_id}_{group_id}")]
-            ]
-
-            await event.respond(
-                f"📢 **Меню рассылки для группы {group.title} от аккаунта {account_name}:**\n\n"
-                f"{text_display}\n"
-                f"🟢 **Статус рассылки:** {status}",
-                buttons=keyboard
-            )
-        except Exception as e:
-            await event.respond(f"⚠ Ошибка при получении информации о группе: {e}")
-    else:
+    # --- вытаскиваем сессию из БД ---
+    row = cursor.execute(
+        "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if not row:
         await event.respond("⚠ Не удалось найти аккаунт.")
+        return
+
+    session_string = row[0]
+    client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+    await client.connect()
+    try:
+        group        = await client.get_entity(group_id)
+        account_name = (await client.get_me()).first_name or "Без имени"
+    finally:
+        await client.disconnect()
+
+    # --- данные индивидуальной рассылки из таблицы ---
+    cursor.execute(
+        "SELECT broadcast_text, interval_minutes "
+        "FROM broadcasts WHERE user_id = ? AND group_id = ?",
+        (user_id, group_id)
+    )
+    broadcast_data = cursor.fetchone()
+
+    # --- проверяем job-ы в APScheduler ---
+    jid_one = f"broadcast_{user_id}_{group_id}"
+    jid_all = f"broadcastALL_{user_id}_{group_id}"
+
+    has_one = scheduler.get_job(jid_one)
+    has_all = scheduler.get_job(jid_all)
+
+    # ---------- статус ----------
+    if has_one:
+        status = "✅ Индивидуальная"
+    elif has_all:
+        status = "✅ Массовая"
+    else:
+        status = "⛔ Остановлена"
+
+    # ---------- что выводить в блоке «Текущий текст» ----------
+    if has_all:
+        txt = broadcast_all_text.get((user_id, group_id), "—")
+        text_display = f"📩 **Текущий текст (массовая):**\n{txt}"
+    elif broadcast_data:
+        broadcast_text, interval_minutes = broadcast_data
+        text_display = (
+            f"📩 **Текущий текст:**\n{broadcast_text}\n"
+            f"⏳ **Интервал:** {interval_minutes} минут"
+        )
+    else:
+        text_display = (
+            "📩 **Текущий текст:** ❌ Не задан\n"
+            "⏳ **Интервал:** ❌ Не задан"
+        )
+
+    # ---------- клавиатура ----------
+    keyboard = [
+        [Button.inline("📝 Текст и Интервал рассылки",
+                       f"broadcasttextinterval_{user_id}_{group_id}")],
+        [Button.inline("✅ Начать/возобновить рассылку",
+                       f"startresumebroadcast_{user_id}_{group_id}")],
+        [Button.inline("⛔ Остановить рассылку",
+                       f"stop_accountbroadcast_{user_id}_{group_id}")]
+    ]
+
+    # ---------- ответ ----------
+    await event.respond(
+        f"📢 **Меню рассылки для группы {group.title} "
+        f"от аккаунта {account_name}:**\n\n"
+        f"{text_display}\n"
+        f"🟢 **Статус рассылки:** {status}",
+        buttons=keyboard
+    )
+
 
 user_states = {}
 
@@ -713,9 +746,7 @@ async def handle_user_input(event):
 
 async def schedule_account_broadcast(user_id: int, text: str, min_m: int, max_m: int | None):
     """
-    Создаёт/перезапускает задачи APScheduler для аккаунта user_id:
-    • если в БД (`groups` таблица) есть @usernames – используем их;
-    • иначе берём все диалоги, где аккаунт состоит в группе.
+    Запускает / перезапускает массовую рассылку от аккаунта user_id.
     """
     row = cursor.execute(
         "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
@@ -724,39 +755,36 @@ async def schedule_account_broadcast(user_id: int, text: str, min_m: int, max_m:
         return
     sess_str = row[0]
 
-    # 1) получаем список желаемых групп из БД
+    # --- какие группы берём ---
     cursor.execute("SELECT group_username FROM groups")
     stored = [r[0].lstrip("@") for r in cursor.fetchall()]
 
-    # 2) авторизуемся
     session = StringSession(sess_str)
-    client = TelegramClient(session, API_ID, API_HASH)
+    client  = TelegramClient(session, API_ID, API_HASH)
     await client.connect()
 
-    # 3) превращаем @username → entity или просто собираем диалоги
     groups = []
     if stored:
         for uname in stored:
             try:
                 ent = await client.get_entity(uname)
-                if getattr(ent, 'megagroup', False) or getattr(ent, 'broadcast', False) or ent.id:
-                    groups.append(ent)
+                groups.append(ent)
             except Exception:
-                continue  # пропускаем, если аккаунт не состоит
+                continue
     else:
         dialogs = await client.get_dialogs()
-        groups = [d.entity for d in dialogs if d.is_group]
+        groups  = [d.entity for d in dialogs if d.is_group]
 
     await client.disconnect()
 
     if not groups:
         return
 
-    # 4) на каждую группу — отдельный job
     for g in groups:
-        gid = g.id
+        gid    = g.id
         job_id = f"broadcastALL_{user_id}_{gid}"
-        scheduler.remove_job(job_id) if scheduler.get_job(job_id) else None
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
 
         async def send_message(ss=sess_str, group_id=gid, txt=text):
             c = TelegramClient(StringSession(ss), API_ID, API_HASH)
@@ -766,21 +794,28 @@ async def schedule_account_broadcast(user_id: int, text: str, min_m: int, max_m:
             finally:
                 await c.disconnect()
 
+        # триггер
         if max_m is None:
             trigger = IntervalTrigger(minutes=min_m)
         else:
             base   = (min_m + max_m) // 2
-            jitter = (max_m - min_m) * 60 // 2   # сек
+            jitter = (max_m - min_m) * 60 // 2
             trigger = IntervalTrigger(minutes=base, jitter=jitter)
 
-        scheduler.add_job(send_message,
-                          trigger,
-                          id=job_id,
-                          next_run_time=datetime.utcnow(),
-                          replace_existing=True)
+        scheduler.add_job(
+            send_message,
+            trigger,
+            id=job_id,
+            next_run_time=datetime.utcnow(),
+            replace_existing=True
+        )
+
+        # --- запоминаем текст для инфопанели группы ---
+        broadcast_all_text[(user_id, gid)] = text
 
     if not scheduler.running:
         scheduler.start()
+
 
 
 print("🚀 Бот запущен...")
