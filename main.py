@@ -9,6 +9,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 from dotenv import load_dotenv
 import os
+import random
+from datetime import datetime
+
 
 load_dotenv()
 
@@ -19,6 +22,9 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
+
+broadcast_all_state = {}      # key = admin_id -> шаги мастера
+
 
 scheduler = AsyncIOScheduler()
 
@@ -58,7 +64,7 @@ client = TelegramClient(StringSession(), API_ID, API_HASH)
 async def add_account(event):
     user_id = event.sender_id
     phone_waiting[user_id] = True
-    await event.respond("📲 Напишите номер телефона аккаунта в формате: `+79998887766`")
+    await event.respond("📲 Напишите номер телефона аккаунта в формате: `+380668887766`")
 
 @bot.on(events.NewMessage(func=lambda e: e.sender_id in phone_waiting and e.text.startswith("+") and e.text[1:].isdigit()))
 async def get_phone(event):
@@ -171,7 +177,12 @@ async def handle_account_button(event):
             username = me.first_name if me.first_name else "Без имени"
             phone = me.phone if me.phone else "Не указан"
 
-            group_buttons = [Button.inline("📋 Список групп", f"listOfgroups_{user_id}")]
+            group_buttons = [
+    Button.inline("📋 Список групп", f"listOfgroups_{user_id}"),
+    Button.inline("🚀 Начать рассылку во все чаты", f"broadcastAll_{user_id}")
+]
+
+
 
             dialogs = await client.get_dialogs()
             groups = [dialog.name for dialog in dialogs if dialog.is_group]
@@ -193,6 +204,95 @@ async def handle_account_button(event):
             await event.respond(f"⚠ Ошибка при загрузке информации: {e}")
     else:
         await event.respond("⚠ Не удалось найти аккаунт.")
+
+# ---------- МЕНЮ «Рассылка во все чаты» ----------
+@bot.on(events.CallbackQuery(data=lambda d: d.decode().startswith("broadcastAll_")))
+async def broadcast_all_menu(event):
+    admin_id = event.sender_id
+    target_user_id = int(event.data.decode().split("_")[1])
+    # запоминаем аккаунт, с которого шлём
+    broadcast_all_state[admin_id] = {"user_id": target_user_id}
+
+    keyboard = [
+        [Button.inline("⏲️ Интервал во все группы", f"sameIntervalAll_{target_user_id}")],
+        [Button.inline("🎲 Разный интервал (25-35)", f"diffIntervalAll_{target_user_id}")]
+    ]
+    await event.respond("Выберите режим отправки:", buttons=keyboard)
+
+
+# ---------- одинаковый интервал ----------
+@bot.on(events.CallbackQuery(data=lambda d: d.decode().startswith("sameIntervalAll_")))
+async def same_interval_start(event):
+    admin_id = event.sender_id
+    uid = int(event.data.decode().split("_")[1])
+    broadcast_all_state[admin_id] = {"user_id": uid, "mode": "same", "step": "text"}
+    await event.respond("📝 Пришлите текст рассылки для **всех** групп этого аккаунта:")
+
+
+# ---------- случайный интервал ----------
+@bot.on(events.CallbackQuery(data=lambda d: d.decode().startswith("diffIntervalAll_")))
+async def diff_interval_start(event):
+    admin_id = event.sender_id
+    uid = int(event.data.decode().split("_")[1])
+    broadcast_all_state[admin_id] = {"user_id": uid, "mode": "diff", "step": "text"}
+    await event.respond("📝 Пришлите текст рассылки, потом спрошу границы интервала:")
+
+
+# ---------- мастер-диалог (текст → интервалы) ----------
+@bot.on(events.NewMessage(func=lambda e: e.sender_id in broadcast_all_state))
+async def broadcast_all_dialog(event):
+    st = broadcast_all_state[event.sender_id]
+
+    # шаг 1 — получили текст
+    if st["step"] == "text":
+        st["text"] = event.text
+        if st["mode"] == "same":
+            st["step"] = "interval"
+            await event.respond("⏲️ Введите интервал (минуты, одно число):")
+        else:
+            st["step"] = "min"
+            await event.respond("🔢 Минимальный интервал (мин):")
+        return
+
+    # одинаковый интервал
+    if st["mode"] == "same" and st["step"] == "interval":
+        try:
+            mins = int(event.text)
+            if mins <= 0:
+                raise ValueError
+        except ValueError:
+            await event.respond("⚠ Должно быть положительное число.")
+            return
+        await schedule_account_broadcast(st["user_id"], st["text"], mins, None)
+        await event.respond(f"✅ Запустил: каждые {mins} мин.")
+        broadcast_all_state.pop(event.sender_id, None)
+        return
+
+    # случайный интервал — шаг 2 (min)
+    if st["mode"] == "diff" and st["step"] == "min":
+        try:
+            st["min"] = int(event.text)
+            if st["min"] <= 0:
+                raise ValueError
+        except ValueError:
+            await event.respond("⚠ Число > 0.")
+            return
+        st["step"] = "max"
+        await event.respond("🔢 Максимальный интервал (мин):")
+        return
+
+    # случайный интервал — шаг 3 (max) + запуск
+    if st["mode"] == "diff" and st["step"] == "max":
+        try:
+            max_m = int(event.text)
+            if max_m <= st["min"]:
+                raise ValueError
+        except ValueError:
+            await event.respond("⚠ Максимум должен быть больше минимума.")
+            return
+        await schedule_account_broadcast(st["user_id"], st["text"], st["min"], max_m)
+        await event.respond(f"✅ Запустил: случайно каждые {st['min']}-{max_m} мин.")
+        broadcast_all_state.pop(event.sender_id, None)
 
 @bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("listOfgroups_")))
 async def handle_groups_list(event):
@@ -578,6 +678,62 @@ async def handle_user_input(event):
         else:
             await event.respond("⚠ Пожалуйста, введите корректный @username группы, начиная с '@'.")
             return
+
+async def schedule_account_broadcast(user_id: int, text: str, min_m: int, max_m: int | None):
+    """
+    Создаёт/перезапускает задачи APScheduler для
+    всех групп аккаунта user_id с интервалом:
+    • min_m — фиксированный, если max_m is None
+    • случайный min_m … max_m, если указан max_m
+    """
+    # берём session_string аккаунта
+    row = cursor.execute("SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)).fetchone()
+    if not row:
+        return
+    sess_str = row[0]
+
+    # собираем список групп
+    session = StringSession(sess_str)
+    client = TelegramClient(session, API_ID, API_HASH)
+    await client.connect()
+    dialogs = await client.get_dialogs()
+    groups = [d for d in dialogs if d.is_group]
+    await client.disconnect()
+
+    if not groups:
+        return
+
+    # на каждую группу — свой job
+    for g in groups:
+        gid = g.id
+        job_id = f"broadcastALL_{user_id}_{gid}"
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+
+        async def send_message(ss=sess_str, group_id=gid, txt=text):
+            c = TelegramClient(StringSession(ss), API_ID, API_HASH)
+            await c.connect()
+            try:
+                await c.send_message(group_id, txt)
+            finally:
+                await c.disconnect()
+
+        if max_m is None:
+            trigger = IntervalTrigger(minutes=min_m)
+        else:
+            base = (min_m + max_m) // 2
+            jitter = (max_m - min_m) * 60 // 2       # в секундах
+            trigger = IntervalTrigger(minutes=base, jitter=jitter)
+
+        scheduler.add_job(send_message,
+                          trigger,
+                          id=job_id,
+                          next_run_time=datetime.utcnow(),
+                          replace_existing=True)
+
+    if not scheduler.running:
+        scheduler.start()
+
 
 print("🚀 Бот запущен...")
 bot.run_until_disconnected()
