@@ -40,9 +40,9 @@ async def refresh_account_menu(admin_id: int, target_user_id: int):
 
 
 def broadcast_status_emoji(user_id: int, group_id: int) -> str:
-    key = gid_key(group_id)
-    jid_one = f"broadcast_{user_id}_{key}"
-    jid_all = f"broadcastALL_{user_id}_{key}"
+    gid_key_str = str(abs(group_id))
+    jid_one = f"broadcast_{user_id}_{gid_key_str}"
+    jid_all = f"broadcastALL_{user_id}_{gid_key_str}"
     return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
 
 def get_active_broadcast_groups(user_id: int) -> set[int]:
@@ -769,18 +769,13 @@ async def handle_user_input(event):
             await event.respond("⚠ Пожалуйста, введите корректный @username группы, начиная с '@'.")
             return
 
+# ---------------------------------------------------------------
 async def schedule_account_broadcast(
-    user_id: int,
-    text: str,
-    min_m: int,
-    max_m: int | None
+    user_id: int, text: str, min_m: int, max_m: int | None
 ):
-    """
-    Ставит/обновляет jobs вида broadcastALL_<user_id>_<gid>,
-    отправляя сообщения только туда, где аккаунт реально
-    может писать.
-    """
-    # --- сессия аккаунта ---
+    """Ставит/обновляет jobs broadcastALL_<user>_<gid> только для чатов,
+    куда аккаунт реально может писать."""
+    # --- сессия ---
     row = cursor.execute(
         "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
     ).fetchone()
@@ -788,69 +783,57 @@ async def schedule_account_broadcast(
         return
     sess_str = row[0]
 
-    # --- собираем подходящие чаты/каналы ---
-    cli = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
-    await cli.connect()
+    client = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
+    await client.connect()
 
-    dialogs = await cli.get_dialogs()
-    entities: list[Channel | Chat] = []
-
-    for d in dialogs:
-        ent = d.entity
-
-        # 1) не группа/канал → пропускаем
+    # --- собираем «разрешённые» чаты/каналы ---
+    ok_entities: list[Channel | Chat] = []
+    for dlg in await client.get_dialogs():
+        ent = dlg.entity
         if not isinstance(ent, (Channel, Chat)):
-            continue
+            continue                               # лички, боты
 
-        # 2) это обычный «broadcast»-канал (лента), а не мегагруппа
         if isinstance(ent, Channel) and ent.broadcast and not ent.megagroup:
-            continue
+            continue                               # витрина-канал
 
-        # 3) проверяем право «send_messages»
         try:
-            perms = await cli.get_permissions(ent)
+            perms = await client.get_permissions(ent)
             if hasattr(perms, "send_messages") and not perms.send_messages:
-                continue
+                continue                           # нет права писать
         except Exception:
-            continue  # если не смогли проверить — безопаснее пропустить
+            continue                               # не смог проверить
 
-        entities.append(ent)
+        ok_entities.append(ent)
 
-    await cli.disconnect()
-    if not entities:  
+    await client.disconnect()
+    if not ok_entities:
         return
 
-    # --- ставим job на каждую разрешённую группу ---
-    for ent in entities:
-        gid_key_str = gid_key(ent.id)                # положительный id
+    # --- ставим job на каждую группу ---
+    for ent in ok_entities:
+        gid_key_str = str(abs(ent.id))
         job_id = f"broadcastALL_{user_id}_{gid_key_str}"
-
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
 
         async def send_message(
-            ss: str = sess_str,
+            ss=sess_str,
             entity=ent,
-            txt: str = text,
-            job_id: str = job_id
+            txt=text,
+            job_id=job_id
         ):
             c = TelegramClient(StringSession(ss), API_ID, API_HASH)
             await c.connect()
             try:
                 await c.send_message(entity, txt)
-            except (ChatAdminRequiredError, ChatWriteForbiddenError):
-                # потеряли право писать — снимаем задачу и убираем галочку
+            except (ChatWriteForbiddenError, ChatAdminRequiredError):
+                # потеряли право — снимем задачу
                 scheduler.remove_job(job_id)
-                broadcast_all_text.pop((user_id, gid_key(entity.id)), None)
-                # 🔄 показать администратору, что галочка исчезла
-                await refresh_account_menu(ADMIN_ID, user_id)
-            except Exception as e:
-                logger.warning("❌ не отправлено в %s: %s", entity.id, e)
             finally:
                 await c.disconnect()
 
-        base    = (min_m + max_m) // 2 if max_m else min_m
-        jitter  = (max_m - min_m) * 60 // 2 if max_m else 0
+        base   = (min_m + max_m)//2 if max_m else min_m
+        jitter = (max_m - min_m)*60//2 if max_m else 0
         trigger = IntervalTrigger(minutes=base, jitter=jitter)
 
         scheduler.add_job(
@@ -861,11 +844,9 @@ async def schedule_account_broadcast(
             replace_existing=True,
         )
 
-        # сохраняем текст для панели информации
-        broadcast_all_text[(user_id, gid_key_str)] = text
-
     if not scheduler.running:
         scheduler.start()
+# ---------------------------------------------------------------
 
 print("🚀 Бот запущен...")
 bot.run_until_disconnected()
