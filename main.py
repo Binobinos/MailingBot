@@ -1,8 +1,8 @@
 import logging
-import os
 import sqlite3
 from datetime import datetime
 
+import telethon
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
@@ -13,63 +13,17 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel, Chat  # ← ДОБАВИЛИ
 
-
-def gid_key(value: int) -> int:
-    """Возвращает abs(id).  Для супергрупп (-100...) и обычных чатов получается один и тот же «ключ»."""
-    return abs(value)
-
-
-# ------------------------------------------------------------------
-async def refresh_account_menu(admin_id: int, target_user_id: int):
-    """
-    Отправить администратору обновлённое меню аккаунта target_user_id.
-    Показываем новые ✅ / ❌ и строку «Массовая рассылка».
-    """
-    try:
-        await handle_account_button(
-            events.CallbackQuery.Event(
-                original_update=None,
-                query_id=0,
-                sender_id=admin_id,
-                data=f"account_info_{target_user_id}".encode(),
-                client=bot
-            )
-        )
-    except Exception as err:
-        logger.warning("Не смог обновить меню: %s", err)
-
-
-# ------------------------------------------------------------------
-
-
-def broadcast_status_emoji(user_id: int, group_id: int) -> str:
-    gid_key_str = str(abs(group_id))
-    jid_one = f"broadcast_{user_id}_{gid_key_str}"
-    jid_all = f"broadcastALL_{user_id}_{gid_key_str}"
-    return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
-
-
-def get_active_broadcast_groups(user_id: int) -> set[int]:
-    active = set()
-    for job in scheduler.get_jobs():
-        if job.id.startswith(f"broadcastALL_{user_id}_"):
-            try:
-                gid_raw = int(job.id.split("_")[2])
-                active.add(gid_key(gid_raw))
-            except (IndexError, ValueError):
-                continue
-    return active
-
+from config import API_ID, API_HASH, BOT_TOKEN, ADMIN_ID
 
 load_dotenv()
+phone_waiting = {}
+code_waiting = {}
+password_waiting = {}
+user_clients = {}
 
+client = TelegramClient("bot.session", API_ID, API_HASH)
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 broadcast_all_state = {}  # key = admin_id -> шаги мастера
 
@@ -93,9 +47,60 @@ bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 auto_client = TelegramClient(StringSession(), API_ID, API_HASH)
 
 
+def gid_key(value: int) -> int:
+    """Возвращает abs(id).  Для супергрупп (-100...) и обычных чатов получается один и тот же «ключ»."""
+    return abs(value)
+
+
+# ------------------------------------------------------------------
+async def refresh_account_menu(event:telethon.events.newmessage.NewMessage.Event, admin_id: int, target_user_id: int):
+    """
+    Отправить администратору обновлённое меню аккаунта target_user_id.
+    Показываем новые ✅ / ❌ и строку «Массовая рассылка».
+    """
+    try:
+        await handle_account_button(
+            event.CallbackQuery.Event(
+                original_update=None,
+                query_id=0,
+                sender_id=admin_id,
+                data=f"account_info_{target_user_id}".encode(),
+                client=bot
+            )
+        )
+    except Exception as err:
+        logger.warning("Не смог обновить меню: %s", err)
+
+
+# ------------------------------------------------------------------
+
+def broadcast_status_emoji(user_id: int, group_id: int) -> str:
+    gid_key_str = str(abs(group_id))
+    jid_one = f"broadcast_{user_id}_{gid_key_str}"
+    jid_all = f"broadcastALL_{user_id}_{gid_key_str}"
+    return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
+
+
+def get_active_broadcast_groups(user_id: int) -> set[int]:
+    active = set()
+    for job in scheduler.get_jobs():
+        if job.id.startswith(f"broadcastALL_{user_id}_"):
+            try:
+                gid_raw = int(job.id.split("_")[2])
+                active.add(gid_key(gid_raw))
+            except (IndexError, ValueError):
+                continue
+    return active
+
+
+
 @bot.on(events.NewMessage(pattern="/start"))
-async def start(event):
+async def start(event: telethon.events.newmessage.NewMessage.Event):
+    """
+    Обрабатывает команду /start
+    """
     if event.sender_id == ADMIN_ID:
+        logging.info(f"Нажата команда /start")
         buttons = [
             [Button.inline("➕ Добавить аккаунты", b"add_account")],
             [Button.inline("📢 Добавить группы", b"groups")],
@@ -107,19 +112,12 @@ async def start(event):
         await event.respond("⛔ Запрещено!")
 
 
-phone_waiting = {}
-code_waiting = {}
-password_waiting = {}
-user_clients = {}
-
-client = TelegramClient(StringSession(), API_ID, API_HASH)
-
-
 @bot.on(events.CallbackQuery(data=b"add_account"))
 async def add_account(event):
     """
     Добавляет аккаунт
     """
+    logging.info(f"Выбрана кнопка добавления аккаунта")
     user_id = event.sender_id
     phone_waiting[user_id] = True
     await event.respond("📲 Напишите номер телефона аккаунта в формате: `+380668887766`")
@@ -133,7 +131,8 @@ async def get_phone(event):
     """
     user_id = event.sender_id
     phone_number = event.text.strip()
-
+    print(type(event))
+    logging.info(f"Отправляю {user_id} на телефон {phone_number} код подтверждения")
     user_clients[user_id] = TelegramClient(StringSession(), API_ID, API_HASH)
     await user_clients[user_id].connect()
 
@@ -144,9 +143,11 @@ async def get_phone(event):
         code_waiting[user_id] = phone_number
         del phone_waiting[user_id]
         await event.respond("✅ Код отправлен! Введите его сюда:")
+        logging.info(f"Код отправлен")
     except Exception as e:
         phone_waiting.pop(user_id, None)
         user_clients.pop(user_id, None)
+        logging.error(f"⚠ Произошла ошибка: {e}")
         await event.respond(f"⚠ Произошла ошибка: {e}\nПопробуйте снова, нажав 'Добавить аккаунт'.")
 
 
@@ -154,7 +155,7 @@ async def get_phone(event):
     func=lambda e: e.sender_id in code_waiting and e.text.isdigit() and e.sender_id not in broadcast_all_state))
 async def get_code(event):
     """
-    Проверяет код
+    Проверяет код от пользователя
     """
     code = event.text.strip()
     user_id = event.sender_id
@@ -210,6 +211,9 @@ active_broadcasts = {}
 
 @bot.on(events.CallbackQuery(data=b"my_accounts"))
 async def my_accounts(event):
+    """
+    Выводит список аккаунтов
+    """
     cursor.execute("SELECT user_id, session_string FROM sessions")
     accounts = cursor.fetchall()
 
@@ -868,7 +872,7 @@ async def schedule_account_broadcast(
             try:
                 await c.send_message(entity, txt)
             except (ChatWriteForbiddenError, ChatAdminRequiredError):
-                # потеряли право — снимем задачу
+                logging.info(f"Снимаем задачу {job_id}")
                 scheduler.remove_job(job_id)
             finally:
                 await c.disconnect()
@@ -876,7 +880,7 @@ async def schedule_account_broadcast(
         base = (min_m + max_m) // 2 if max_m else min_m
         jitter = (max_m - min_m) * 60 // 2 if max_m else 0
         trigger = IntervalTrigger(minutes=base, jitter=jitter)
-
+        logging.info(f"Добавляем задачу в корутину")
         scheduler.add_job(
             send_message,
             trigger,
@@ -886,10 +890,11 @@ async def schedule_account_broadcast(
         )
 
     if not scheduler.running:
+        logging.info("Запускаем все задачи")
         scheduler.start()
 
 
 # ---------------------------------------------------------------
 if __name__ == "__main__":
-    print("🚀 Бот запущен...")
+    logging.info("🚀 Бот запущен...")
     bot.run_until_disconnected()
