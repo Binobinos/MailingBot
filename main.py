@@ -4,6 +4,7 @@ from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.types import Channel, Chat          #  ← ДОБАВИЛИ
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 import os
 import random
 from datetime import datetime
+
 
 
 load_dotenv()
@@ -450,7 +452,7 @@ async def handle_group_info(event):
         f"🟢 **Статус рассылки:** {status}",
         buttons=keyboard
     )
-
+  
 
 user_states = {}
 
@@ -744,53 +746,75 @@ async def handle_user_input(event):
             await event.respond("⚠ Пожалуйста, введите корректный @username группы, начиная с '@'.")
             return
 
-async def schedule_account_broadcast(user_id: int, text: str, min_m: int, max_m: int | None):
+async def schedule_account_broadcast(
+    user_id: int,
+    text: str,
+    min_m: int,
+    max_m: int | None
+):
     """
-    Запускает / перезапускает массовую рассылку от аккаунта user_id.
+    Создаёт/обновляет jobs вида
+    broadcastALL_<user_id>_<group_id>
+    и отправляет ТОЛЬКО в реальные группы/каналы,
+    где аккаунт состоит.
     """
     row = cursor.execute(
-        "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
+        "SELECT session_string FROM sessions WHERE user_id = ?",
+        (user_id,)
     ).fetchone()
     if not row:
         return
     sess_str = row[0]
 
-    # --- какие группы берём ---
-    cursor.execute("SELECT group_username FROM groups")
-    stored = [r[0].lstrip("@") for r in cursor.fetchall()]
-
-    session = StringSession(sess_str)
-    client  = TelegramClient(session, API_ID, API_HASH)
+    # -------- подключаемся разово, собираем «группы» ----------
+    client = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
     await client.connect()
 
-    groups = []
-    if stored:
-        for uname in stored:
+    # 1) если админ занёс @username-ы вручную ─ берём только их
+    cursor.execute("SELECT group_username FROM groups")
+    stored_usernames = [r[0].lstrip("@") for r in cursor.fetchall()]
+
+    entities: list[Channel | Chat] = []
+    if stored_usernames:
+        for uname in stored_usernames:
             try:
                 ent = await client.get_entity(uname)
-                groups.append(ent)
+                if isinstance(ent, (Channel, Chat)):
+                    entities.append(ent)
             except Exception:
+                # пользователь или недоступная сущность — пропускаем
                 continue
     else:
+        # 2) иначе берём ВСЕ диалоги-чаты аккаунта
         dialogs = await client.get_dialogs()
-        groups  = [d.entity for d in dialogs if d.is_group]
+        entities = [d.entity for d in dialogs if isinstance(d.entity, (Channel, Chat))]
 
     await client.disconnect()
 
-    if not groups:
+    if not entities:
         return
 
-    for g in groups:
-        gid    = g.id
+    # -------- создаём/перезаписываем jobs ----------
+    for ent in entities:
+        gid    = ent.id
         job_id = f"broadcastALL_{user_id}_{gid}"
+
+        # удаляем старый job, чтобы не плодить дубликаты
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
 
-        async def send_message(ss=sess_str, group_id=gid, txt=text):
+        # «замыкаем» entity вместо пустого числа
+        async def send_message(
+            ss: str = sess_str,
+            entity = ent,
+            txt: str = text
+        ):
             c = TelegramClient(StringSession(ss), API_ID, API_HASH)
             await c.connect()
             try:
-                await c.send_message(group_id, txt)
+                await c.send_message(entity, txt)
+            except Exception as err:
+                logger.warning("❌ Не смог отправить в %s: %s", entity, err)
             finally:
                 await c.disconnect()
 
@@ -810,7 +834,7 @@ async def schedule_account_broadcast(user_id: int, text: str, min_m: int, max_m:
             replace_existing=True
         )
 
-        # --- запоминаем текст для инфопанели группы ---
+        # запоминаем текст для инфопанели
         broadcast_all_text[(user_id, gid)] = text
 
     if not scheduler.running:
