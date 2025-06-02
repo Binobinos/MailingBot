@@ -13,6 +13,28 @@ import os
 import random
 from datetime import datetime
 
+def gid_key(value: int) -> int:
+    """Возвращает abs(id).  Для супергрупп (-100...) и обычных чатов получается один и тот же «ключ»."""
+    return abs(value)
+
+def broadcast_status_emoji(user_id: int, group_id: int) -> str:
+    key = gid_key(group_id)
+    jid_one = f"broadcast_{user_id}_{key}"
+    jid_all = f"broadcastALL_{user_id}_{key}"
+    return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
+
+def get_active_broadcast_groups(user_id: int) -> set[int]:
+    active = set()
+    for job in scheduler.get_jobs():
+        if job.id.startswith(f"broadcastALL_{user_id}_"):
+            try:
+                gid_raw = int(job.id.split("_")[2])
+                active.add(gid_key(gid_raw))
+            except (IndexError, ValueError):
+                continue
+    return active
+
+
 
 
 load_dotenv()
@@ -45,32 +67,6 @@ conn.commit()
 bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
 auto_client = TelegramClient(StringSession(), API_ID, API_HASH)
-
-def broadcast_status_emoji(user_id: int, group_id: int) -> str:
-    """
-    ✅ — если запущена либо персональная (`broadcast_...`)
-         либо массовая (`broadcastALL_...`) рассылка для группы
-    """
-    jid_one = f"broadcast_{user_id}_{group_id}"
-    jid_all = f"broadcastALL_{user_id}_{group_id}"
-    return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
-
-
-def get_active_broadcast_groups(user_id: int) -> set[int]:
-    """
-    Возвращает множество group_id, для которых
-    есть job вида  broadcastALL_<user_id>_<group_id>
-    """
-    active = set()
-    for job in scheduler.get_jobs():
-        if job.id.startswith(f"broadcastALL_{user_id}_"):
-            try:
-                gid = int(job.id.split("_")[2])
-                active.add(gid)
-            except (IndexError, ValueError):
-                continue
-    return active
-
 
 @bot.on(events.NewMessage(pattern="/start"))
 async def start(event):
@@ -217,7 +213,7 @@ async def handle_account_button(event):
 
         if groups:
             lines = [
-                f"{'✅' if g.id in active_gids else '❌'} {g.name}"
+                f"{'✅' if gid_key(g.id) in active_gids else '❌'} {g.name}"
                 for g in groups
             ]
             group_list = "\n".join(lines)
@@ -225,6 +221,7 @@ async def handle_account_button(event):
             group_list = "У пользователя нет групп."
 
         mass_active = "🟢 ВКЛ" if active_gids else "🔴 ВЫКЛ"
+
 
         buttons = [
             [
@@ -356,10 +353,11 @@ async def handle_groups_list(event):
         buttons = []
         for d in dialogs:
             if d.is_group:
-                mark = "✅" if d.id in active else "❌"
+                mark = "✅" if gid_key(d.id) in active else "❌"
                 buttons.append(
                     [Button.inline(f"{mark} {d.name}", f"group_info_{user_id}_{d.id}")]
                 )
+
 
         if not buttons:
             await event.respond("У аккаунта нет групп.")
@@ -404,8 +402,9 @@ async def handle_group_info(event):
     broadcast_data = cursor.fetchone()
 
     # --- проверяем job-ы в APScheduler ---
-    jid_one = f"broadcast_{user_id}_{group_id}"
-    jid_all = f"broadcastALL_{user_id}_{group_id}"
+    jid_one = f"broadcast_{user_id}_{gid_key(group_id)}"
+    jid_all = f"broadcastALL_{user_id}_{gid_key(group_id)}"
+
 
     has_one = scheduler.get_job(jid_one)
     has_all = scheduler.get_job(jid_all)
@@ -420,7 +419,7 @@ async def handle_group_info(event):
 
     # ---------- что выводить в блоке «Текущий текст» ----------
     if has_all:
-        txt = broadcast_all_text.get((user_id, group_id), "—")
+        txt = broadcast_all_text.get((user_id, gid_key(group_id)), "—")
         text_display = f"📩 **Текущий текст (массовая):**\n{txt}"
     elif broadcast_data:
         broadcast_text, interval_minutes = broadcast_data
@@ -746,101 +745,68 @@ async def handle_user_input(event):
             await event.respond("⚠ Пожалуйста, введите корректный @username группы, начиная с '@'.")
             return
 
-async def schedule_account_broadcast(
-    user_id: int,
-    text: str,
-    min_m: int,
-    max_m: int | None
-):
-    """
-    Создаёт/обновляет jobs вида
-    broadcastALL_<user_id>_<group_id>
-    и отправляет ТОЛЬКО в реальные группы/каналы,
-    где аккаунт состоит.
-    """
+async def schedule_account_broadcast(user_id: int, text: str,
+                                     min_m: int, max_m: int | None):
     row = cursor.execute(
-        "SELECT session_string FROM sessions WHERE user_id = ?",
-        (user_id,)
+        "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
     ).fetchone()
     if not row:
         return
     sess_str = row[0]
 
-    # -------- подключаемся разово, собираем «группы» ----------
-    client = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
-    await client.connect()
+    cli = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
+    await cli.connect()
 
-    # 1) если админ занёс @username-ы вручную ─ берём только их
-    cursor.execute("SELECT group_username FROM groups")
-    stored_usernames = [r[0].lstrip("@") for r in cursor.fetchall()]
-
+    # --- собираем только те диалоги, куда МЫ можем писать ---
+    dialogs = await cli.get_dialogs()
     entities: list[Channel | Chat] = []
-    if stored_usernames:
-        for uname in stored_usernames:
-            try:
-                ent = await client.get_entity(uname)
-                if isinstance(ent, (Channel, Chat)):
-                    entities.append(ent)
-            except Exception:
-                # пользователь или недоступная сущность — пропускаем
+    for d in dialogs:
+        ent = d.entity
+        if not isinstance(ent, (Channel, Chat)):
+            continue          # исключаем лички и т. д.
+
+        try:
+            # проверяем право «send messages»
+            perms = await cli.get_permissions(ent)
+            if hasattr(perms, "send_messages") and not perms.send_messages:
                 continue
-    else:
-        # 2) иначе берём ВСЕ диалоги-чаты аккаунта
-        dialogs = await client.get_dialogs()
-        entities = [d.entity for d in dialogs if isinstance(d.entity, (Channel, Chat))]
+        except Exception:
+            continue          # если не смогли проверить — пропускаем
 
-    await client.disconnect()
+        entities.append(ent)
 
+    await cli.disconnect()
     if not entities:
         return
 
-    # -------- создаём/перезаписываем jobs ----------
+    # --- ставим job на каждую годную группу ---
     for ent in entities:
-        gid    = ent.id
-        job_id = f"broadcastALL_{user_id}_{gid}"
+        gid_key_str = gid_key(ent.id)           # положительный id
+        job_id = f"broadcastALL_{user_id}_{gid_key_str}"
 
-        # удаляем старый job, чтобы не плодить дубликаты
-        if scheduler.get_job(job_id):
-            scheduler.remove_job(job_id)
+        scheduler.remove_job(job_id) if scheduler.get_job(job_id) else None
 
-        # «замыкаем» entity вместо пустого числа
-        async def send_message(
-            ss: str = sess_str,
-            entity = ent,
-            txt: str = text
-        ):
+        async def send_message(ss=sess_str, entity=ent, txt=text):
             c = TelegramClient(StringSession(ss), API_ID, API_HASH)
             await c.connect()
             try:
                 await c.send_message(entity, txt)
-            except Exception as err:
-                logger.warning("❌ Не смог отправить в %s: %s", entity, err)
             finally:
                 await c.disconnect()
 
-        # триггер
-        if max_m is None:
-            trigger = IntervalTrigger(minutes=min_m)
-        else:
-            base   = (min_m + max_m) // 2
-            jitter = (max_m - min_m) * 60 // 2
-            trigger = IntervalTrigger(minutes=base, jitter=jitter)
+        base = (min_m + max_m)//2 if max_m else min_m
+        jitter = (max_m - min_m)*60//2 if max_m else 0
+        trigger = IntervalTrigger(minutes=base, jitter=jitter)
 
-        scheduler.add_job(
-            send_message,
-            trigger,
-            id=job_id,
-            next_run_time=datetime.utcnow(),
-            replace_existing=True
-        )
+        scheduler.add_job(send_message, trigger,
+                          id=job_id,
+                          next_run_time=datetime.utcnow(),
+                          replace_existing=True)
 
-        # запоминаем текст для инфопанели
-        broadcast_all_text[(user_id, gid)] = text
+        broadcast_all_text[(user_id, gid_key_str)] = text
 
     if not scheduler.running:
         scheduler.start()
-
-
 
 print("🚀 Бот запущен...")
 bot.run_until_disconnected()
