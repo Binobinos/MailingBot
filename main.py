@@ -757,13 +757,29 @@ async def schedule_account_broadcast(user_id: int, text: str,
     cli = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
     await cli.connect()
 
-    # --- собираем только те диалоги, куда МЫ можем писать ---
     dialogs = await cli.get_dialogs()
     entities: list[Channel | Chat] = []
     for d in dialogs:
         ent = d.entity
+
+        # 1) лички / боты — пропускаем
         if not isinstance(ent, (Channel, Chat)):
-            continue          # исключаем лички и т. д.
+            continue
+
+        # 2) обычный broadcast-канал (лента новостей): постить может только владелец
+        if isinstance(ent, Channel) and ent.broadcast and not ent.megagroup:
+            continue
+
+        # 3) проверяем, есть ли у нас право "send_messages"
+        try:
+            perms = await cli.get_permissions(ent)
+            if hasattr(perms, "send_messages") and not perms.send_messages:
+                continue
+        except Exception:
+            continue        # не смогли запросить права — лучше пропустить
+
+        entities.append(ent)
+
 
         try:
             # проверяем право «send messages»
@@ -786,13 +802,21 @@ async def schedule_account_broadcast(user_id: int, text: str,
 
         scheduler.remove_job(job_id) if scheduler.get_job(job_id) else None
 
-        async def send_message(ss=sess_str, entity=ent, txt=text):
+        async def send_message(ss=sess_str, entity=ent, txt=text, job_id=job_id):
+            from telethon.errors import ChatAdminRequiredError, ChatWriteForbiddenError
             c = TelegramClient(StringSession(ss), API_ID, API_HASH)
             await c.connect()
             try:
                 await c.send_message(entity, txt)
+            except (ChatAdminRequiredError, ChatWriteForbiddenError):
+                # нас лишили права писать – снимаем job и убираем "галочку"
+                scheduler.remove_job(job_id)        # ⬅ главное
+                broadcast_all_text.pop((user_id, gid_key(entity.id)), None)
+            except Exception as e:
+                logger.warning("❌ не отправлено в %s: %s", entity.id, e)
             finally:
                 await c.disconnect()
+
 
         base = (min_m + max_m)//2 if max_m else min_m
         jitter = (max_m - min_m)*60//2 if max_m else 0
