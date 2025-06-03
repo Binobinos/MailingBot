@@ -39,10 +39,12 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS groups (
     group_id INTEGER PRIMARY KEY AUTOINCREMENT, 
     group_username TEXT UNIQUE)""")
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS sessions (
     user_id INTEGER PRIMARY KEY,
     session_string TEXT)""")
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS broadcasts ( 
     id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -53,6 +55,7 @@ CREATE TABLE IF NOT EXISTS broadcasts (
     is_active BOOLEAN,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (group_id) REFERENCES groups(id))""")
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS send_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,7 +64,9 @@ CREATE TABLE IF NOT EXISTS send_history (
     group_name TEXT,
     sent_at TEXT,
     message_text TEXT);""")
+
 conn.commit()
+cursor.close()
 
 
 # ------------------------------------------------------------------
@@ -97,12 +102,19 @@ def broadcast_status_emoji(user_id: int, group_id: int) -> str:
     jid_all = f"broadcastALL_{user_id}_{gid_key_str}"
     return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
 
+
+def broadcast_status_emoji_copy(user_id: int, group_id: int) -> str:
+    gid_key_str = gid_key(group_id)
+    return "✅" if gid_key_str in get_active_broadcast_groups(user_id) else "❌"
+
 def get_active_broadcast_groups(user_id: int) -> set[int]:
     active = set()
+    cursor = conn.cursor()
     cursor.execute("""SELECT id FROM broadcasts WHERE is_active = ? AND user_id = ?""", (True, user_id))
     broadcasts = cursor.fetchall()
     for job in broadcasts:
         active.add(job[0])
+    cursor.close()
     return active
 
 
@@ -176,7 +188,7 @@ async def get_code(event: telethon.events.newmessage.NewMessage.Event):
     code = event.text.strip()
     user_id = event.sender_id
     phone_number = code_waiting[user_id]
-
+    cursor = conn.cursor()
     try:
         await user_clients[user_id].sign_in(phone_number, code)
         session_string = user_clients[user_id].session.save()
@@ -194,7 +206,10 @@ async def get_code(event: telethon.events.newmessage.NewMessage.Event):
     except Exception as e:
         del code_waiting[user_id]
         user_clients.pop(user_id, None)
+        logging.error(f"Ошибка: {e}, Неверный код")
         await event.respond(f"❌ Неверный код или ошибка: {e}\nПопробуйте снова, нажав 'Добавить аккаунт'.")
+    finally:
+        cursor.close()
 
 
 @bot.on(events.NewMessage(func=lambda
@@ -203,6 +218,7 @@ async def get_password(event: telethon.events.newmessage.NewMessage.Event):
     user_id = event.sender_id
     if password_waiting[user_id]["waiting"] and event.message.id > password_waiting[user_id]["last_message_id"]:
         password = event.text.strip()
+        cursor = conn.cursor()
         try:
             await user_clients[user_id].sign_in(password=password)
             me = await user_clients[user_id].get_me()
@@ -216,6 +232,8 @@ async def get_password(event: telethon.events.newmessage.NewMessage.Event):
             await event.respond("✅ Авторизация с паролем прошла успешно!")
         except Exception as e:
             await event.respond(f"⚠ Ошибка при вводе пароля: {e}\nПопробуйте снова, нажав 'Добавить аккаунт'.")
+        finally:
+            cursor.close()
 
 
 @bot.on(events.CallbackQuery(data=b"my_accounts"))
@@ -819,7 +837,7 @@ async def handle_user_input(event):
 
             if group:
                 cursor.execute("DELETE FROM groups WHERE group_username = ?", (group_username,))
-                conn.commit()   `
+                conn.commit()
                 await event.respond(f"✅ Группа {group_username} успешно удалена из базы данных!")
             else:
                 await event.respond("⚠ Группа с именем {group_username} не найдена в базе данных.")
@@ -832,11 +850,11 @@ async def handle_user_input(event):
 
 # ---------------------------------------------------------------
 async def schedule_account_broadcast(
-        user_id: int, text: str, min_m: int, max_m: int | None
-):
+        user_id: int, text: str, min_m: int, max_m: int | None):
     """Ставит/обновляет jobs broadcastALL_<user>_<gid> только для чатов,
     куда аккаунт реально может писать."""
     # --- сессия ---
+    cursor = conn.cursor()
     row = cursor.execute(
         "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
     ).fetchone()
@@ -910,6 +928,7 @@ async def schedule_account_broadcast(
                     logging.warning(f"Не удалось уведомить админа: {notify_err}")
             finally:
                 await c.disconnect()
+                cursor.close()
 
         base = (min_m + max_m) // 2 if max_m else min_m
         jitter = (max_m - min_m) * 60 // 2 if max_m else 0
@@ -932,3 +951,4 @@ async def schedule_account_broadcast(
 if __name__ == "__main__":
     logging.info("🚀 Бот запущен...")
     bot.run_until_disconnected()
+    conn.close()
