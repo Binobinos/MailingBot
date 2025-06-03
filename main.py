@@ -21,7 +21,6 @@ code_waiting = {}
 password_waiting = {}
 user_clients = {}
 
-client = TelegramClient("bot.session", API_ID, API_HASH)
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -40,6 +39,16 @@ cursor.execute(
 cursor.execute("CREATE TABLE IF NOT EXISTS sessions (user_id INTEGER PRIMARY KEY, session_string TEXT)")
 cursor.execute(
     "CREATE TABLE IF NOT EXISTS broadcasts ( id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, group_id INTEGER, session_string TEXT, broadcast_text TEXT, interval_minutes INTEGER, is_active BOOLEAN,FOREIGN KEY (user_id) REFERENCES users(id),FOREIGN KEY (group_id) REFERENCES groups(id));")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS send_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    group_id INTEGER,
+    group_name TEXT,
+    sent_at TEXT,
+    message_text TEXT
+)
+""")
 conn.commit()
 
 bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -53,7 +62,7 @@ def gid_key(value: int) -> int:
 
 
 # ------------------------------------------------------------------
-async def refresh_account_menu(event:telethon.events.newmessage.NewMessage.Event, admin_id: int, target_user_id: int):
+async def refresh_account_menu(event: telethon.events.newmessage.NewMessage.Event, admin_id: int, target_user_id: int):
     """
     Отправить администратору обновлённое меню аккаунта target_user_id.
     Показываем новые ✅ / ❌ и строку «Массовая рассылка».
@@ -93,7 +102,6 @@ def get_active_broadcast_groups(user_id: int) -> set[int]:
     return active
 
 
-
 @bot.on(events.NewMessage(pattern="/start"))
 async def start(event: telethon.events.newmessage.NewMessage.Event):
     """
@@ -105,7 +113,8 @@ async def start(event: telethon.events.newmessage.NewMessage.Event):
             [Button.inline("➕ Добавить аккаунты", b"add_account")],
             [Button.inline("📢 Добавить группы", b"groups")],
             [Button.inline("👤 Мои аккаунты", b"my_accounts")],
-            [Button.inline("📑 Мои группы", b"my_groups")]
+            [Button.inline("📑 Мои группы", b"my_groups")],
+            [Button.inline("🕗 История рассылки", b"history_mailing")]
         ]
         await event.respond("👋 Добро пожаловать, Админ!", buttons=buttons)
     else:
@@ -120,7 +129,7 @@ async def add_account(event):
     logging.info(f"Выбрана кнопка добавления аккаунта")
     user_id = event.sender_id
     phone_waiting[user_id] = True
-    await event.respond("📲 Напишите номер телефона аккаунта в формате: `+380668887766`")
+    await event.respond("📲 Напишите номер телефона аккаунта в формате: `+79000000000`")
 
 
 @bot.on(
@@ -231,9 +240,62 @@ async def my_accounts(event):
             username = me.first_name if me.first_name else "Без ника"
             buttons.append([Button.inline(f"👤 {username}", f"account_info_{user_id}")])
         except Exception as e:
-            buttons.append([Button.inline(f"⚠ Ошибка при загрузке аккаунта", f"error_{user_id}")])
+            buttons.append([Button.inline(f"⚠ Ошибка при загрузке аккаунта {e}", f"error_{user_id}")])
 
     await event.respond("📱 **Список ваших аккаунтов:**", buttons=buttons)
+
+
+@bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("history_mailing")))
+async def history_data(event):
+    user_id = int(event.data.decode().split("_")[2])
+
+    row = cursor.execute(
+        "SELECT send_history FROM sessions WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if not row:
+        await event.respond("⚠ Не удалось найти аккаунт.")
+        return
+
+    session_string = row[0]
+    client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+    await client.connect()
+    try:
+        me = await client.get_me()
+        username = me.first_name or "Без имени"
+        phone = me.phone or "Не указан"
+
+        dialogs = await client.get_dialogs()
+        groups = [d for d in dialogs if d.is_group]
+
+        active_gids = get_active_broadcast_groups(user_id)
+
+        if groups:
+            lines = [
+                f"{'✅' if gid_key(g.id) in active_gids else '❌'} {g.name}"
+                for g in groups
+            ]
+            group_list = "\n".join(lines)
+        else:
+            group_list = "У пользователя нет групп."
+
+        mass_active = "🟢 ВКЛ" if active_gids else "🔴 ВЫКЛ"
+        buttons = [
+            [
+                Button.inline("📋 Список групп", f"listOfgroups_{user_id}"),
+                Button.inline("🚀 Начать рассылку во все чаты", f"broadcastAll_{user_id}")
+            ]
+        ]
+
+        await event.respond(
+            f"📢 **Меню для аккаунта {username}:**\n"
+            f"🚀 **Массовая рассылка:** {mass_active}\n\n"
+            f"📌 **Имя:** {username}\n"
+            f"📞 **Номер:** `+{phone}`\n\n"
+            f"📝 **Список групп:**\n{group_list}",
+            buttons=buttons
+        )
+    finally:
+        await client.disconnect()
 
 
 @bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("account_info_")))
@@ -404,7 +466,7 @@ async def handle_groups_list(event):
             if d.is_group:
                 mark = "✅" if gid_key(d.id) in active else "❌"
                 buttons.append(
-                    [Button.inline(f"{mark} {d.name}", f"group_info_{user_id}_{d.id}")]
+                    [Button.inline(f"{mark} {d.name}", f"group_info_{user_id}_{gid_key(d.id)}")]
                 )
 
         if not buttons:
@@ -437,7 +499,7 @@ async def handle_group_info(event):
     client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
     await client.connect()
     try:
-        group = await client.get_entity(group_id)
+        group = await client.get_entity(gid_key(group_id))
         account_name = (await client.get_me()).first_name or "Без имени"
     finally:
         await client.disconnect()
@@ -446,7 +508,7 @@ async def handle_group_info(event):
     cursor.execute(
         "SELECT broadcast_text, interval_minutes "
         "FROM broadcasts WHERE user_id = ? AND group_id = ?",
-        (user_id, group_id)
+        (user_id, gid_key(group_id))
     )
     broadcast_data = cursor.fetchone()
 
@@ -484,11 +546,11 @@ async def handle_group_info(event):
     # ---------- клавиатура ----------
     keyboard = [
         [Button.inline("📝 Текст и Интервал рассылки",
-                       f"broadcasttextinterval_{user_id}_{group_id}")],
+                       f"broadcasttextinterval_{user_id}_{gid_key(group_id)}")],
         [Button.inline("✅ Начать/возобновить рассылку",
-                       f"startresumebroadcast_{user_id}_{group_id}")],
+                       f"startresumebroadcast_{user_id}_{gid_key(group_id)}")],
         [Button.inline("⛔ Остановить рассылку",
-                       f"stop_accountbroadcast_{user_id}_{group_id}")]
+                       f"stop_accountbroadcast_{user_id}_{gid_key(group_id)}")]
     ]
 
     # ---------- ответ ----------
@@ -521,15 +583,15 @@ async def handle_broadcast_text_interval(event):
             new_interval_minutes_event = await conv.wait_event(events.NewMessage(from_users=event.sender_id))
             new_interval_minutes = int(new_interval_minutes_event.text)
 
-            cursor.execute("SELECT * FROM broadcasts WHERE user_id = ? AND group_id = ?", (user_id, group_id))
+            cursor.execute("SELECT * FROM broadcasts WHERE user_id = ? AND group_id = ?", (user_id, gid_key(group_id)))
             existing_row = cursor.fetchone()
 
             if existing_row:
-                update_broadcast_data(user_id, group_id, new_broadcast_text, new_interval_minutes)
+                update_broadcast_data(user_id, gid_key(group_id), new_broadcast_text, new_interval_minutes)
                 await event.respond(
                     f"✅ Текст рассылки успешно обновлен на: {new_broadcast_text}\n⏳ Интервал рассылки обновлен на {new_interval_minutes} минут.")
             else:
-                create_broadcast_data(user_id, group_id, new_broadcast_text, new_interval_minutes)
+                create_broadcast_data(user_id, gid_key(group_id), new_broadcast_text, new_interval_minutes)
                 await event.respond(
                     f"✅ Текст рассылки и интервал были успешно добавлены:\n{new_broadcast_text}\n⏳ Интервал рассылки — {new_interval_minutes} минут.")
 
@@ -545,7 +607,7 @@ def create_broadcast_data(user_id, group_id, broadcast_text, interval_minutes):
     cursor.execute("""
         INSERT INTO broadcasts (user_id, group_id, broadcast_text, interval_minutes, is_active)
         VALUES (?, ?, ?, ?, ?)
-    """, (user_id, group_id, broadcast_text, interval_minutes, False))
+    """, (user_id, gid_key(group_id), broadcast_text, interval_minutes, False))
     conn.commit()
 
 
@@ -554,7 +616,7 @@ def update_broadcast_data(user_id, group_id, broadcast_text, interval_minutes):
         UPDATE broadcasts
         SET broadcast_text = ?, interval_minutes = ?
         WHERE user_id = ? AND group_id = ?
-    """, (broadcast_text, interval_minutes, user_id, group_id))
+    """, (broadcast_text, interval_minutes, user_id, gid_key(group_id)))
     conn.commit()
 
 
@@ -574,7 +636,7 @@ async def start_resume_broadcast(event):
         await event.respond(f"⚠ Ошибка при извлечении данных: {e}")
         return
 
-    job_id = f"broadcast_{user_id}_{group_id}"
+    job_id = f"broadcast_{user_id}_{gid_key(group_id)}"
     existing_job = scheduler.get_job(job_id)
 
     if existing_job:
@@ -582,7 +644,7 @@ async def start_resume_broadcast(event):
         return
 
     cursor.execute("SELECT broadcast_text, interval_minutes FROM broadcasts WHERE user_id = ? AND group_id = ?",
-                   (user_id, group_id))
+                   (user_id, gid_key(group_id)))
     row = cursor.fetchone()
 
     if row:
@@ -604,7 +666,7 @@ async def start_resume_broadcast(event):
         await client.connect()
 
         try:
-            group = await client.get_entity(group_id)
+            group = await client.get_entity(gid_key(group_id))
             group_title = group.title
         except Exception as e:
             await event.respond(f"⚠ Ошибка при получении информации о группе: {e}")
@@ -618,7 +680,7 @@ async def start_resume_broadcast(event):
 
             await client.connect()
             try:
-                group = await client.get_entity(group_id)
+                group = await client.get_entity(gid_key(group_id))
                 await client.send_message(group, broadcast_text)
             except Exception as e:
                 print(f"Ошибка отправки сообщения в группу: {e}")
@@ -653,13 +715,13 @@ async def stop_broadcast(event):
     session = StringSession(session_string)
     client = TelegramClient(session, API_ID, API_HASH)
     await client.connect()
-    group = await client.get_entity(group_id)
-    job_id = f"broadcast_{user_id}_{group_id}"
+    group = await client.get_entity(gid_key(group_id))
+    job_id = f"broadcast_{user_id}_{gid_key(group_id)}"
     job = scheduler.get_job(job_id)
     if job:
         job.remove()
         cursor.execute("UPDATE broadcasts SET is_active = ? WHERE user_id = ? AND group_id = ?",
-                       (False, user_id, group_id))
+                       (False, user_id, gid_key(group_id)))
         conn.commit()
 
         await event.respond(f"⛔ Рассылка в группу **{group.title}** остановлена.")
@@ -690,12 +752,15 @@ async def handle_user_input(event):
             if user:
                 cursor.execute("DELETE FROM sessions WHERE session_string = ?", (phone_number,))
                 conn.commit()
+                logging.info(f"✅ Аккаунт с номером {phone_number} успешно удален.")
                 await event.respond(f"✅ Аккаунт с номером {phone_number} успешно удален.")
             else:
+                logging.warning(f"Аккаунт {user} не найден")
                 await event.respond("⚠ Этот аккаунт не найден в базе данных.")
 
             user_sessions_phone.pop(event.sender_id, None)
         else:
+            logging.warning(f"Не корректный ввод телефонного номера")
             await event.respond("⚠ Пожалуйста, введите корректный номер телефона, начиная с '+'.")
 
 
@@ -734,19 +799,18 @@ async def handle_group_input(event):
 async def my_groups(event):
     cursor.execute("SELECT group_username FROM groups")
     groups = cursor.fetchall()
-
     if not groups:
         await event.respond("❌ У вас нет добавленных групп.")
         return
+    buttons = [
+        [Button.inline("❌ Удалить группу", b"delete_group")],
+        [Button.inline("➕ Добавить все аккаунты в эти группы", b"add_all_accounts_to_groups")]
+    ]
 
     message = "📑 **Список добавленных групп:**\n"
 
     for group in groups:
         message += f"📌 {group[0]}\n"
-        buttons = [
-            [Button.inline("❌ Удалить группу", b"delete_group")],
-            [Button.inline("➕ Добавить все аккаунты в эти группы", b"add_all_accounts_to_groups")]
-        ]
     await event.respond(message, buttons=buttons)
 
 
@@ -836,18 +900,21 @@ async def schedule_account_broadcast(
     for dlg in await client.get_dialogs():
         ent = dlg.entity
         if not isinstance(ent, (Channel, Chat)):
+            logging.info(f"пропускаем задачу {ent} так как данный чат Личный диалог или бот")
             continue  # лички, боты
 
         if isinstance(ent, Channel) and ent.broadcast and not ent.megagroup:
+            logging.info(f"пропускаем задачу {ent} так как данный чат витрина-канал")
             continue  # витрина-канал
 
         try:
             perms = await client.get_permissions(ent)
             if hasattr(perms, "send_messages") and not perms.send_messages:
+                logging.info(f"пропускаем задачу {ent} так как нет права писать")
                 continue  # нет права писать
         except Exception:
             continue  # не смог проверить
-
+        logging.info(f"Добавляем задачу")
         ok_entities.append(ent)
 
     await client.disconnect()
@@ -856,7 +923,7 @@ async def schedule_account_broadcast(
 
     # --- ставим job на каждую группу ---
     for ent in ok_entities:
-        gid_key_str = str(abs(ent.id))
+        gid_key_str = str(gid_key(ent.id))
         job_id = f"broadcastALL_{user_id}_{gid_key_str}"
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
@@ -865,15 +932,21 @@ async def schedule_account_broadcast(
                 ss=sess_str,
                 entity=ent,
                 txt=text,
-                job_id=job_id
+                jobs_id=job_id
         ):
             c = TelegramClient(StringSession(ss), API_ID, API_HASH)
             await c.connect()
             try:
                 await c.send_message(entity, txt)
+                logging.info(f"Отправляем {entity} {txt}")
+                cursor.execute(
+                    "INSERT INTO send_history (user_id, group_id, group_name, sent_at, message_text) VALUES (?, ?, ?, ?, ?)",
+                    (user_id, entity.id, entity.title if hasattr(entity, 'title') else '', datetime.now().isoformat(),
+                     txt)
+                )
             except (ChatWriteForbiddenError, ChatAdminRequiredError):
-                logging.info(f"Снимаем задачу {job_id}")
-                scheduler.remove_job(job_id)
+                logging.info(f"Снимаем задачу {jobs_id}")
+                scheduler.remove_job(jobs_id)
             finally:
                 await c.disconnect()
 
@@ -885,7 +958,7 @@ async def schedule_account_broadcast(
             send_message,
             trigger,
             id=job_id,
-            next_run_time=datetime.utcnow(),
+            next_run_time=datetime.now(),
             replace_existing=True,
         )
 
