@@ -97,16 +97,12 @@ def broadcast_status_emoji(user_id: int, group_id: int) -> str:
     jid_all = f"broadcastALL_{user_id}_{gid_key_str}"
     return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
 
-
 def get_active_broadcast_groups(user_id: int) -> set[int]:
     active = set()
-    for job in scheduler.get_jobs():
-        if job.id.startswith(f"broadcastALL_{user_id}_"):
-            try:
-                gid_raw = int(job.id.split("_")[2])
-                active.add(gid_key(gid_raw))
-            except (IndexError, ValueError):
-                continue
+    cursor.execute("""SELECT id FROM broadcasts WHERE is_active = ? AND user_id = ?""", (True, user_id))
+    broadcasts = cursor.fetchall()
+    for job in broadcasts:
+        active.add(job[0])
     return active
 
 
@@ -115,7 +111,6 @@ async def start(event: telethon.events.newmessage.NewMessage.Event):
     """
     Обрабатывает команду /start
     """
-    print(type(event.sender_id), type(event))
     if event.sender_id == ADMIN_ID:
         logging.info(f"Нажата команда /start")
         buttons = [
@@ -178,7 +173,6 @@ async def get_code(event: telethon.events.newmessage.NewMessage.Event):
     """
     Проверяет код от пользователя
     """
-    print(type(event))
     code = event.text.strip()
     user_id = event.sender_id
     phone_number = code_waiting[user_id]
@@ -610,6 +604,12 @@ async def start_resume_broadcast(event):
 
     cursor.execute("SELECT broadcast_text, interval_minutes FROM broadcasts WHERE user_id = ? AND group_id = ?",
                    (user_id, gid_key(group_id)))
+    cursor.execute("""
+        UPDATE broadcasts 
+        SET is_active = ? 
+        WHERE user_id = ? AND group_id = ?
+    """, (True, user_id, gid_key(group_id)))
+    conn.commit()
     row = cursor.fetchone()
 
     if row:
@@ -722,13 +722,9 @@ async def handle_user_input(event):
 
             user_sessions_phone.pop(event.sender_id, None)
         else:
-            logging.warning(f"Не корректный ввод телефонного номера")
+            logging.error(f"Не корректный ввод телефонного номера")
             await event.respond("⚠ Пожалуйста, введите корректный номер телефона, начиная с '+'.")
 
-
-cursor.execute(
-    "CREATE TABLE IF NOT EXISTS groups (group_id INTEGER PRIMARY KEY AUTOINCREMENT, group_username TEXT UNIQUE)")
-conn.commit()
 
 @bot.on(events.CallbackQuery(data=b"groups"))
 async def manage_groups(event):
@@ -823,7 +819,7 @@ async def handle_user_input(event):
 
             if group:
                 cursor.execute("DELETE FROM groups WHERE group_username = ?", (group_username,))
-                conn.commit()
+                conn.commit()   `
                 await event.respond(f"✅ Группа {group_username} успешно удалена из базы данных!")
             else:
                 await event.respond("⚠ Группа с именем {group_username} не найдена в базе данных.")
@@ -900,6 +896,9 @@ async def schedule_account_broadcast(
                     (user_id, entity.id, entity.title if hasattr(entity, 'title') else '', datetime.now().isoformat(),
                      txt)
                 )
+                cursor.execute("UPDATE broadcasts SET is_active = ? WHERE user_id = ? AND group_id = ?",
+                               (False, user_id, gid_key(entity.id)))
+                conn.commit()
             except (ChatWriteForbiddenError, ChatAdminRequiredError) as e:
                 logging.info(f"Снимаем задачу {jobs_id} — нет прав писать: {e}")
                 scheduler.remove_job(jobs_id)
