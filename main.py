@@ -1,44 +1,58 @@
 import logging
 import sqlite3
 from datetime import datetime
+from typing import Dict
 
 import telethon
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from dotenv import load_dotenv
 from telethon import TelegramClient, events, Button
-from telethon.errors import ChatAdminRequiredError, ChatWriteForbiddenError
+from telethon.errors import ChatAdminRequiredError, ChatWriteForbiddenError, FloodWaitError
 from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
+from telethon.tl.functions.auth import SendCodeRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel, Chat  # ← ДОБАВИЛИ
 
 from config import API_ID, API_HASH, BOT_TOKEN, ADMIN_ID
 
-load_dotenv()
-phone_waiting = {}
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
+bot: TelegramClient = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+phone_waiting: Dict[int, bool] = {}  # Список пользователей ожидающие подтверждения телефона
 code_waiting = {}
 password_waiting = {}
-user_clients = {}
-
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+user_clients: Dict[int, TelegramClient] = {}  # c
 broadcast_all_state = {}  # key = admin_id -> шаги мастера
-
 # сохраняем текст для каждой группы, когда запускаем broadcastALL
 broadcast_all_text = {}  # key = (user_id, group_id) -> text
-
 scheduler = AsyncIOScheduler()
-
+user_sessions_deliting = {}
+user_sessions = {}
+user_sessions_phone = {}
+user_states = {}
+broadcast_jobs = {}
 conn = sqlite3.connect("sessions.db")
 cursor = conn.cursor()
 
-cursor.execute(
-    "CREATE TABLE IF NOT EXISTS groups (group_id INTEGER PRIMARY KEY AUTOINCREMENT, group_username TEXT UNIQUE)")
-cursor.execute("CREATE TABLE IF NOT EXISTS sessions (user_id INTEGER PRIMARY KEY, session_string TEXT)")
-cursor.execute(
-    "CREATE TABLE IF NOT EXISTS broadcasts ( id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, group_id INTEGER, session_string TEXT, broadcast_text TEXT, interval_minutes INTEGER, is_active BOOLEAN,FOREIGN KEY (user_id) REFERENCES users(id),FOREIGN KEY (group_id) REFERENCES groups(id));")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS groups (
+    group_id INTEGER PRIMARY KEY AUTOINCREMENT, 
+    group_username TEXT UNIQUE)""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS sessions (
+    user_id INTEGER PRIMARY KEY,
+    session_string TEXT)""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS broadcasts ( 
+    id INTEGER PRIMARY KEY AUTOINCREMENT, 
+    user_id INTEGER, group_id INTEGER, 
+    session_string TEXT, 
+    broadcast_text TEXT, 
+    interval_minutes INTEGER,
+    is_active BOOLEAN,
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    FOREIGN KEY (group_id) REFERENCES groups(id))""")
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS send_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,22 +60,16 @@ CREATE TABLE IF NOT EXISTS send_history (
     group_id INTEGER,
     group_name TEXT,
     sent_at TEXT,
-    message_text TEXT
-)
-""")
+    message_text TEXT);""")
 conn.commit()
 
-bot = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-auto_client = TelegramClient(StringSession(), API_ID, API_HASH)
-
-
+# ------------------------------------------------------------------
 def gid_key(value: int) -> int:
     """Возвращает abs(id).  Для супергрупп (-100...) и обычных чатов получается один и тот же «ключ»."""
     return abs(value)
 
 
-# ------------------------------------------------------------------
 async def refresh_account_menu(event: telethon.events.newmessage.NewMessage.Event, admin_id: int, target_user_id: int):
     """
     Отправить администратору обновлённое меню аккаунта target_user_id.
@@ -78,13 +86,13 @@ async def refresh_account_menu(event: telethon.events.newmessage.NewMessage.Even
             )
         )
     except Exception as err:
-        logger.warning("Не смог обновить меню: %s", err)
+        logging.warning("Не смог обновить меню: %s", err)
 
 
 # ------------------------------------------------------------------
 
 def broadcast_status_emoji(user_id: int, group_id: int) -> str:
-    gid_key_str = str(abs(group_id))
+    gid_key_str = gid_key(group_id)
     jid_one = f"broadcast_{user_id}_{gid_key_str}"
     jid_all = f"broadcastALL_{user_id}_{gid_key_str}"
     return "✅" if scheduler.get_job(jid_one) or scheduler.get_job(jid_all) else "❌"
@@ -107,14 +115,13 @@ async def start(event: telethon.events.newmessage.NewMessage.Event):
     """
     Обрабатывает команду /start
     """
+    print(type(event.sender_id), type(event))
     if event.sender_id == ADMIN_ID:
         logging.info(f"Нажата команда /start")
         buttons = [
-            [Button.inline("➕ Добавить аккаунты", b"add_account")],
-            [Button.inline("📢 Добавить группы", b"groups")],
-            [Button.inline("👤 Мои аккаунты", b"my_accounts")],
-            [Button.inline("📑 Мои группы", b"my_groups")],
-            [Button.inline("🕗 История рассылки", b"history_mailing")]
+            [Button.inline("➕ Добавить аккаунты", b"add_account"), Button.inline("📢 Добавить группы", b"groups")],
+            [Button.inline("👤 Мои аккаунты", b"my_accounts"), Button.inline("📑 Мои группы", b"my_groups")],
+            [Button.inline("🕗 История рассылки", b"show_history")]
         ]
         await event.respond("👋 Добро пожаловать, Админ!", buttons=buttons)
     else:
@@ -122,25 +129,24 @@ async def start(event: telethon.events.newmessage.NewMessage.Event):
 
 
 @bot.on(events.CallbackQuery(data=b"add_account"))
-async def add_account(event):
+async def add_account(event: telethon.events.callbackquery.CallbackQuery.Event):
     """
     Добавляет аккаунт
     """
-    logging.info(f"Выбрана кнопка добавления аккаунта")
-    user_id = event.sender_id
+    logging.info(f"Выбрана кнопка добавления аккаунта. подтверждение телефона и отправка кода")
+    user_id: int = event.sender_id
     phone_waiting[user_id] = True
     await event.respond("📲 Напишите номер телефона аккаунта в формате: `+79000000000`")
 
 
 @bot.on(
     events.NewMessage(func=lambda e: e.sender_id in phone_waiting and e.text.startswith("+") and e.text[1:].isdigit()))
-async def get_phone(event):
+async def get_phone(event: telethon.events.newmessage.NewMessage.Event):
     """
     Отправляет код на телефон
     """
-    user_id = event.sender_id
-    phone_number = event.text.strip()
-    print(type(event))
+    user_id: int = event.sender_id
+    phone_number: str = event.text.strip()
     logging.info(f"Отправляю {user_id} на телефон {phone_number} код подтверждения")
     user_clients[user_id] = TelegramClient(StringSession(), API_ID, API_HASH)
     await user_clients[user_id].connect()
@@ -154,18 +160,25 @@ async def get_phone(event):
         await event.respond("✅ Код отправлен! Введите его сюда:")
         logging.info(f"Код отправлен")
     except Exception as e:
-        phone_waiting.pop(user_id, None)
-        user_clients.pop(user_id, None)
-        logging.error(f"⚠ Произошла ошибка: {e}")
-        await event.respond(f"⚠ Произошла ошибка: {e}\nПопробуйте снова, нажав 'Добавить аккаунт'.")
+        if isinstance(e, (SendCodeRequest, FloodWaitError)):
+            sec_time = int(str(e).split()[3])
+            message = f"⚠ Телеграмм забанил за быстрые запросы. подождите {(a := sec_time // 3600)} Часов {(b := ((sec_time - a * 3600) // 60))} Минут {sec_time - a * 3600 - b * 60} Секунд"
+            await event.respond(message)
+            logging.error(message)
+        else:
+            phone_waiting.pop(user_id, None)
+            user_clients.pop(user_id, None)
+            logging.error(f"⚠ Произошла ошибка: {e}")
+            await event.respond(f"⚠ Произошла ошибка: {e}\nПопробуйте снова, нажав 'Добавить аккаунт'.")
 
 
 @bot.on(events.NewMessage(
     func=lambda e: e.sender_id in code_waiting and e.text.isdigit() and e.sender_id not in broadcast_all_state))
-async def get_code(event):
+async def get_code(event: telethon.events.newmessage.NewMessage.Event):
     """
     Проверяет код от пользователя
     """
+    print(type(event))
     code = event.text.strip()
     user_id = event.sender_id
     phone_number = code_waiting[user_id]
@@ -192,9 +205,8 @@ async def get_code(event):
 
 @bot.on(events.NewMessage(func=lambda
         e: e.sender_id in password_waiting and e.sender_id not in user_states and e.sender_id not in broadcast_all_state))
-async def get_password(event):
+async def get_password(event: telethon.events.newmessage.NewMessage.Event):
     user_id = event.sender_id
-
     if password_waiting[user_id]["waiting"] and event.message.id > password_waiting[user_id]["last_message_id"]:
         password = event.text.strip()
         try:
@@ -212,12 +224,6 @@ async def get_password(event):
             await event.respond(f"⚠ Ошибка при вводе пароля: {e}\nПопробуйте снова, нажав 'Добавить аккаунт'.")
 
 
-user_sessions_account_spam = {}
-active_spam = {}
-
-active_broadcasts = {}
-
-
 @bot.on(events.CallbackQuery(data=b"my_accounts"))
 async def my_accounts(event):
     """
@@ -225,7 +231,7 @@ async def my_accounts(event):
     """
     cursor.execute("SELECT user_id, session_string FROM sessions")
     accounts = cursor.fetchall()
-
+    print(type(event))
     if not accounts:
         await event.respond("❌ У вас нет добавленных аккаунтов.")
         return
@@ -245,57 +251,24 @@ async def my_accounts(event):
     await event.respond("📱 **Список ваших аккаунтов:**", buttons=buttons)
 
 
-@bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("history_mailing")))
-async def history_data(event):
-    user_id = int(event.data.decode().split("_")[2])
-
-    row = cursor.execute(
-        "SELECT send_history FROM sessions WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    if not row:
-        await event.respond("⚠ Не удалось найти аккаунт.")
+@bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("show_history")))
+async def show_history(event):
+    cursor.execute("""
+            SELECT group_name, sent_at, message_text
+            FROM send_history
+            ORDER BY sent_at DESC
+            LIMIT 10
+        """)
+    rows = cursor.fetchall()
+    if not rows:
+        await event.respond("История рассылки пуста.")
         return
-
-    session_string = row[0]
-    client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
-    await client.connect()
-    try:
-        me = await client.get_me()
-        username = me.first_name or "Без имени"
-        phone = me.phone or "Не указан"
-
-        dialogs = await client.get_dialogs()
-        groups = [d for d in dialogs if d.is_group]
-
-        active_gids = get_active_broadcast_groups(user_id)
-
-        if groups:
-            lines = [
-                f"{'✅' if gid_key(g.id) in active_gids else '❌'} {g.name}"
-                for g in groups
-            ]
-            group_list = "\n".join(lines)
-        else:
-            group_list = "У пользователя нет групп."
-
-        mass_active = "🟢 ВКЛ" if active_gids else "🔴 ВЫКЛ"
-        buttons = [
-            [
-                Button.inline("📋 Список групп", f"listOfgroups_{user_id}"),
-                Button.inline("🚀 Начать рассылку во все чаты", f"broadcastAll_{user_id}")
-            ]
-        ]
-
-        await event.respond(
-            f"📢 **Меню для аккаунта {username}:**\n"
-            f"🚀 **Массовая рассылка:** {mass_active}\n\n"
-            f"📌 **Имя:** {username}\n"
-            f"📞 **Номер:** `+{phone}`\n\n"
-            f"📝 **Список групп:**\n{group_list}",
-            buttons=buttons
-        )
-    finally:
-        await client.disconnect()
+    msg = "🕗 <b>10 последних рассылок:</b>\n\n"
+    num = 1
+    for group_name, sent_at, message_text in rows:
+        msg += f"📌№{num}, Группа - **{group_name}**\n🕓 Время - **{sent_at}**\n💬 Сообщение - **{message_text}**\n\n"
+        num += 1
+    await event.respond(msg)
 
 
 @bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("account_info_")))
@@ -373,7 +346,7 @@ async def same_interval_start(event):
     uid = int(event.data.decode().split("_")[1])
     broadcast_all_state[admin_id] = {"user_id": uid, "mode": "same", "step": "text"}
     await event.respond("📝 Пришлите текст рассылки для **всех** групп этого аккаунта:")
-
+    await refresh_account_menu(event, admin_id, uid)
 
 # ---------- случайный интервал ----------
 @bot.on(events.CallbackQuery(data=lambda d: d.decode().startswith("diffIntervalAll_")))
@@ -382,7 +355,7 @@ async def diff_interval_start(event):
     uid = int(event.data.decode().split("_")[1])
     broadcast_all_state[admin_id] = {"user_id": uid, "mode": "diff", "step": "text"}
     await event.respond("📝 Пришлите текст рассылки, потом спрошу границы интервала:")
-
+    await refresh_account_menu(event, admin_id, uid)
 
 # ---------- мастер-диалог (текст → интервалы) ----------
 @bot.on(events.NewMessage(func=lambda e: e.sender_id in broadcast_all_state))
@@ -477,10 +450,6 @@ async def handle_groups_list(event):
     finally:
         await client.disconnect()
 
-
-broadcast_jobs = {}
-
-
 # ---------- меню конкретной группы ----------
 @bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("group_info_")))
 async def handle_group_info(event):
@@ -561,10 +530,6 @@ async def handle_group_info(event):
         f"🟢 **Статус рассылки:** {status}",
         buttons=keyboard
     )
-
-
-user_states = {}
-
 
 @bot.on(events.CallbackQuery(data=lambda data: data.decode().startswith("broadcasttextinterval_")))
 async def handle_broadcast_text_interval(event):
@@ -682,8 +647,8 @@ async def start_resume_broadcast(event):
             try:
                 group = await client.get_entity(gid_key(group_id))
                 await client.send_message(group, broadcast_text)
-            except Exception as e:
-                print(f"Ошибка отправки сообщения в группу: {e}")
+            except Exception as error:
+                logging.error(f"Ошибка отправки сообщения в группу: {error}")
             finally:
                 await client.disconnect()
 
@@ -727,10 +692,7 @@ async def stop_broadcast(event):
         await event.respond(f"⛔ Рассылка в группу **{group.title}** остановлена.")
     else:
         await event.respond(f"⚠ Рассылка в группу **{group.title}** не была запущена.")
-
-
-user_sessions_phone = {}
-
+    await refresh_account_menu(event, event.sender_id, user_id)
 
 @bot.on(events.CallbackQuery(data=b"delete_account"))
 async def handle_delete_account(event):
@@ -767,9 +729,6 @@ async def handle_user_input(event):
 cursor.execute(
     "CREATE TABLE IF NOT EXISTS groups (group_id INTEGER PRIMARY KEY AUTOINCREMENT, group_username TEXT UNIQUE)")
 conn.commit()
-
-user_sessions = {}
-
 
 @bot.on(events.CallbackQuery(data=b"groups"))
 async def manage_groups(event):
@@ -843,9 +802,6 @@ async def add_all_accounts_to_groups(event):
                 await client(JoinChannelRequest(group[0]))
         except Exception as e:
             await event.respond(f"⚠ Ошибка при добавлении аккаунта: {e}")
-
-
-user_sessions_deliting = {}
 
 
 @bot.on(events.CallbackQuery(data=b"delete_group"))
@@ -944,9 +900,15 @@ async def schedule_account_broadcast(
                     (user_id, entity.id, entity.title if hasattr(entity, 'title') else '', datetime.now().isoformat(),
                      txt)
                 )
-            except (ChatWriteForbiddenError, ChatAdminRequiredError):
-                logging.info(f"Снимаем задачу {jobs_id}")
+            except (ChatWriteForbiddenError, ChatAdminRequiredError) as e:
+                logging.info(f"Снимаем задачу {jobs_id} — нет прав писать: {e}")
                 scheduler.remove_job(jobs_id)
+                # Сообщить админу в личку (если нужно):
+                try:
+                    await bot.send_message(ADMIN_ID,
+                                           f"❌ Не удалось отправить сообщение в {getattr(entity, 'title', str(entity))}: нет прав писать.")
+                except Exception as notify_err:
+                    logging.warning(f"Не удалось уведомить админа: {notify_err}")
             finally:
                 await c.disconnect()
 
