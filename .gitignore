@@ -1,4 +1,9 @@
-*.env
+.env
+__pycache__/
+*.py[cod]
 *.session
+venv/
 Procfile
 *.db
+*.log
+*.sqlite
