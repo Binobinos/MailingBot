@@ -6,8 +6,8 @@ from telethon.events import CallbackQuery, NewMessage
 from telethon.sessions import StringSession
 from telethon.tl.functions.auth import SendCodeRequest
 
-from config import __CallbackQuery, __Message, phone_waiting, code_waiting, password_waiting, user_clients, API_ID, \
-    API_HASH, broadcast_all_state, user_states
+from config import (__CallbackQuery, __Message, phone_waiting, code_waiting, password_waiting, user_clients, API_ID,
+                    API_HASH, broadcast_all_state, user_states)
 from main import bot, conn
 
 

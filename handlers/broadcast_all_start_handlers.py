@@ -133,9 +133,7 @@ async def schedule_account_broadcast(user_id: int,
     куда аккаунт реально может писать."""
     # --- сессия ---
     cursor = conn.cursor()
-    row = cursor.execute(
-        "SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)
-    ).fetchone()
+    row = cursor.execute("SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)).fetchone()
     cursor.execute("""UPDATE broadcasts SET broadcast_text = ? WHERE user_id = ?""", (text, user_id))
     if not row:
         return
