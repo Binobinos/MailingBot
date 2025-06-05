@@ -5,17 +5,16 @@ from typing import Union
 from apscheduler.triggers.interval import IntervalTrigger
 from telethon import Button, TelegramClient
 from telethon.errors import ChatWriteForbiddenError, ChatAdminRequiredError
-from telethon.events import CallbackQuery
 from telethon.sessions import StringSession
 from telethon.tl.types import Channel, Chat
 
-from config import __CallbackQuery, __Message, broadcast_all_state, API_ID, API_HASH, scheduler
+from config import callback_query, callback_message, broadcast_all_state, API_ID, API_HASH, scheduler, Query
 from func.func import gid_key
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=lambda d: d.decode().startswith("broadcastAll_")))
-async def broadcast_all_menu(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda d: d.decode().startswith("broadcastAll_")))
+async def broadcast_all_menu(event: callback_query) -> None:
     admin_id = event.sender_id
     target_user_id = int(event.data.decode().split("_")[1])
     # запоминаем аккаунт, с которого шлём
@@ -29,8 +28,8 @@ async def broadcast_all_menu(event: __CallbackQuery) -> None:
 
 
 # ---------- одинаковый интервал ----------
-@bot.on(CallbackQuery(data=lambda d: d.decode().startswith("sameIntervalAll_")))
-async def same_interval_start(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda d: d.decode().startswith("sameIntervalAll_")))
+async def same_interval_start(event: callback_query) -> None:
     admin_id = event.sender_id
     uid = int(event.data.decode().split("_")[1])
     broadcast_all_state[admin_id] = {"user_id": uid, "mode": "same", "step": "text"}
@@ -38,8 +37,8 @@ async def same_interval_start(event: __CallbackQuery) -> None:
 
 
 # ---------- случайный интервал ----------
-@bot.on(CallbackQuery(data=lambda d: d.decode().startswith("diffIntervalAll_")))
-async def diff_interval_start(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda d: d.decode().startswith("diffIntervalAll_")))
+async def diff_interval_start(event: callback_query) -> None:
     admin_id = event.sender_id
     uid = int(event.data.decode().split("_")[1])
     broadcast_all_state[admin_id] = {"user_id": uid, "mode": "diff", "step": "text"}
@@ -47,8 +46,8 @@ async def diff_interval_start(event: __CallbackQuery) -> None:
 
 
 # ---------- мастер-диалог (текст → интервалы) ----------
-@bot.on(CallbackQuery(func=lambda e: e.sender_id in broadcast_all_state))
-async def broadcast_all_dialog(event: __Message) -> None:
+@bot.on(Query(func=lambda e: e.sender_id in broadcast_all_state))
+async def broadcast_all_dialog(event: callback_message) -> None:
     st = broadcast_all_state[event.sender_id]
 
     # шаг 1 — получили текст
@@ -94,8 +93,8 @@ async def broadcast_all_dialog(event: __Message) -> None:
         broadcast_all_state.pop(event.sender_id, None)
 
 
-@bot.on(CallbackQuery(data=lambda data: data.decode().startswith("StopBroadcastAll_")))
-async def stop_broadcast_all(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda data: data.decode().startswith("StopBroadcastAll_")))
+async def stop_broadcast_all(event: callback_query) -> None:
     data = event.data.decode()
     try:
         user_id = int(data.split("_")[1])

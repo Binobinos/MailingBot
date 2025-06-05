@@ -1,17 +1,15 @@
-from telethon.events import CallbackQuery, NewMessage
-
-from config import user_sessions_deleting, __CallbackQuery, __Message
+from config import user_sessions_deleting, callback_query, callback_message, Query, New_Message
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=b"delete_group"))
-async def handle_delete_group(event: __CallbackQuery) -> None:
+@bot.on(Query(data=b"delete_group"))
+async def handle_delete_group(event: callback_query) -> None:
     user_sessions_deleting[event.sender_id] = {"step": "awaiting_group_username"}
     await event.respond("📲 Введите @username группы, которую нужно удалить:")
 
 
-@bot.on(NewMessage(func=lambda event: (user_state := user_sessions_deleting.get(event.sender_id)) and user_state["step"] == "awaiting_group_username"))
-async def handle_user_input(event: __Message) -> None:
+@bot.on(New_Message(func=lambda event: (user_state := user_sessions_deleting.get(event.sender_id)) and user_state["step"] == "awaiting_group_username"))
+async def handle_user_input(event: callback_message) -> None:
     group_username = event.text.strip()
 
     if group_username.startswith("@"):

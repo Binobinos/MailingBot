@@ -2,17 +2,16 @@ import logging
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
-from telethon.events import CallbackQuery, NewMessage
 from telethon.sessions import StringSession
 from telethon.tl.functions.auth import SendCodeRequest
 
-from config import (__CallbackQuery, __Message, phone_waiting, code_waiting, password_waiting, user_clients, API_ID,
-                    API_HASH, broadcast_all_state, user_states)
+from config import (callback_query, callback_message, phone_waiting, code_waiting, password_waiting, user_clients, API_ID,
+                    API_HASH, broadcast_all_state, user_states, New_Message, Query)
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=b"add_account"))
-async def add_account(event: __CallbackQuery) -> None:
+@bot.on(Query(data=b"add_account"))
+async def add_account(event: callback_query) -> None:
     """
     Добавляет аккаунт
     """
@@ -22,8 +21,8 @@ async def add_account(event: __CallbackQuery) -> None:
     await event.respond("📲 Напишите номер телефона аккаунта в формате: `+79000000000`")
 
 
-@bot.on(NewMessage(func=lambda e: e.sender_id in phone_waiting and e.text.startswith("+") and e.text[1:].isdigit()))
-async def send_code_for_phone(event: __Message) -> None:
+@bot.on(New_Message(func=lambda e: e.sender_id in phone_waiting and e.text.startswith("+") and e.text[1:].isdigit()))
+async def send_code_for_phone(event: callback_message) -> None:
     """
     Отправляет код на телефон
     """
@@ -56,9 +55,9 @@ async def send_code_for_phone(event: __Message) -> None:
             await event.respond(f"⚠ Произошла ошибка: {e}\nПопробуйте снова, нажав 'Добавить аккаунт'.")
 
 
-@bot.on(NewMessage(
+@bot.on(New_Message(
     func=lambda e: e.sender_id in code_waiting and e.text.isdigit() and e.sender_id not in broadcast_all_state))
-async def get_code(event: __Message) -> None:
+async def get_code(event: callback_message) -> None:
     """
     Проверяет код от пользователя
     """
@@ -89,9 +88,9 @@ async def get_code(event: __Message) -> None:
         cursor.close()
 
 
-@bot.on(NewMessage(func=lambda
+@bot.on(New_Message(func=lambda
         e: e.sender_id in password_waiting and e.sender_id not in user_states and e.sender_id not in broadcast_all_state))
-async def get_password(event: __Message) -> None:
+async def get_password(event: callback_message) -> None:
     user_id = event.sender_id
     if password_waiting[user_id]["waiting"] and event.message.id > password_waiting[user_id]["last_message_id"]:
         password = event.text.strip()

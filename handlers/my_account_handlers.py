@@ -1,14 +1,13 @@
 from telethon import Button, TelegramClient
-from telethon.events import CallbackQuery
 from telethon.sessions import StringSession
 
-from config import __CallbackQuery, API_ID, API_HASH
+from config import callback_query, API_ID, API_HASH, Query
 from func.func import get_active_broadcast_groups, gid_key
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=b"my_accounts"))
-async def my_accounts(event: __CallbackQuery) -> None:
+@bot.on(Query(data=b"my_accounts"))
+async def my_accounts(event: callback_query) -> None:
     """
     Выводит список аккаунтов
     """
@@ -34,8 +33,8 @@ async def my_accounts(event: __CallbackQuery) -> None:
     await event.respond("📱 **Список ваших аккаунтов:**", buttons=buttons)
 
 
-@bot.on(CallbackQuery(data=lambda data: data.decode().startswith("account_info_")))
-async def handle_account_button(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda data: data.decode().startswith("account_info_")))
+async def handle_account_button(event: callback_query) -> None:
     user_id = int(event.data.decode().split("_")[2])
     cursor = conn.cursor()
     row = cursor.execute(

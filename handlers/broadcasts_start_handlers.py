@@ -3,16 +3,15 @@ import logging
 
 from apscheduler.triggers.interval import IntervalTrigger
 from telethon import TelegramClient
-from telethon.events import CallbackQuery
 from telethon.sessions import StringSession
 
-from config import __CallbackQuery, API_ID, API_HASH, scheduler, user_states
+from config import callback_query, API_ID, API_HASH, scheduler, user_states, Query
 from func.func import update_broadcast_data, create_broadcast_data, gid_key
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=lambda data: data.decode().startswith("broadcasttextinterval_")))
-async def handle_broadcast_text_interval(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda data: data.decode().startswith("BroadcastTextInterval_")))
+async def handle_broadcast_text_interval(event: callback_query) -> None:
     data = event.data.decode()
     user_id, group_id = map(int, data.split("_")[1:])
     async with bot.conversation(event.sender_id) as conv:
@@ -50,8 +49,8 @@ async def handle_broadcast_text_interval(event: __CallbackQuery) -> None:
             cursor.close()
 
 
-@bot.on(CallbackQuery(data=lambda data: data.decode().startswith("startresumebroadcast_")))
-async def start_resume_broadcast(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda data: data.decode().startswith("StartResumeBroadcast_")))
+async def start_resume_broadcast(event: callback_query) -> None:
     data = event.data.decode()
     parts = data.split("_")
 
@@ -153,11 +152,11 @@ async def start_resume_broadcast(event: __CallbackQuery) -> None:
     cursor.close()
 
 
-@bot.on(CallbackQuery(data=lambda data: data.decode().startswith("stop_accountbroadcast_")))
-async def stop_broadcast(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda data: data.decode().startswith("StopAccountBroadcast_")))
+async def stop_broadcast(event: callback_query) -> None:
     data = event.data.decode()
     try:
-        user_id, group_id = map(int, data.split("_")[2:])
+        user_id, group_id = map(int, data.split("_")[1:])
     except ValueError as e:
         await event.respond(f"⚠ Ошибка при извлечении user_id и group_id: {e}")
         return

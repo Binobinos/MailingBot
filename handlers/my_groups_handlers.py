@@ -1,18 +1,17 @@
 import logging
 
 from telethon import Button, TelegramClient
-from telethon.events import CallbackQuery
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Channel, Chat
 
-from config import __CallbackQuery, API_ID, API_HASH
+from config import callback_query, API_ID, API_HASH, Query
 from func.func import broadcast_status_emoji
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=b"my_groups"))
-async def my_groups(event: __CallbackQuery) -> None:
+@bot.on(Query(data=b"my_groups"))
+async def my_groups(event: callback_query) -> None:
     cursor = conn.cursor()
     cursor.execute("SELECT group_id, group_username FROM pre_groups", )
     groups = cursor.fetchall()
@@ -33,8 +32,8 @@ async def my_groups(event: __CallbackQuery) -> None:
     await event.respond(message, buttons=buttons)
 
 
-@bot.on(CallbackQuery(data=b"add_all_accounts_to_groups"))
-async def add_all_accounts_to_groups(event: __CallbackQuery) -> None:
+@bot.on(Query(data=b"add_all_accounts_to_groups"))
+async def add_all_accounts_to_groups(event: callback_query) -> None:
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, session_string FROM sessions")
     accounts = cursor.fetchall()
@@ -71,8 +70,8 @@ async def add_all_accounts_to_groups(event: __CallbackQuery) -> None:
     cursor.close()
 
 
-@bot.on(CallbackQuery(data=b"add_all_groups"))
-async def add_all_accounts_to_groups(event: __CallbackQuery) -> None:
+@bot.on(Query(data=b"add_all_groups"))
+async def add_all_accounts_to_groups(event: callback_query) -> None:
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, session_string FROM sessions")
     accounts = cursor.fetchall()

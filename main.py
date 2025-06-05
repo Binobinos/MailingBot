@@ -9,10 +9,15 @@ logging.basicConfig(filename=LOG_FILE, format=LOG_FORMAT, level=LOG_LEVEL, encod
 
 bot: TelegramClient = TelegramClient("bot", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-conn = sqlite3.connect("sessions.db")
+conn: sqlite3.Connection = sqlite3.connect("sessions.db")
 
 
-def create_table():
+def create_table() -> None:
+    """
+    Создает таблицы SQL если их нет
+    :return:
+        None
+    """
     start_cursor = conn.cursor()
     start_cursor.execute("""
         CREATE TABLE IF NOT EXISTS pre_groups (
@@ -55,7 +60,12 @@ def create_table():
     start_cursor.close()
 
 
-def delete_table():
+def delete_table() -> None:
+    """
+    После остановки бота удаляет невыполненные задачи из базы данных
+    :return:
+        None
+    """
     end_cursor = conn.cursor()
     end_cursor.execute("""DELETE FROM broadcasts WHERE is_active = ?""", (True,))
     end_cursor.execute("""DELETE FROM broadcasts WHERE is_active = ?""", (False,))

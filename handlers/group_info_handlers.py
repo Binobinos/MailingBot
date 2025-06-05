@@ -1,16 +1,16 @@
 import logging
+import sqlite3
 
 from telethon import Button, TelegramClient
-from telethon.events import CallbackQuery
 from telethon.sessions import StringSession
 
-from config import __CallbackQuery, API_ID, API_HASH, broadcast_all_text, scheduler
+from config import callback_query, API_ID, API_HASH, broadcast_all_text, scheduler, Query
 from func.func import get_active_broadcast_groups, gid_key
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=lambda data: data.decode().startswith("listOfgroups_")))
-async def handle_groups_list(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda data: data.decode().startswith("listOfgroups_")))
+async def handle_groups_list(event: callback_query) -> None:
     user_id = int(event.data.decode().split("_")[1])
     cursor = conn.cursor()
     row = cursor.execute("SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)).fetchone()
@@ -43,22 +43,24 @@ async def handle_groups_list(event: __CallbackQuery) -> None:
 
 
 # ---------- меню конкретной группы ----------
-@bot.on(CallbackQuery(data=lambda data: data.decode().startswith("group_info_")))
-async def handle_group_info(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda data: data.decode().startswith("group_info_")))
+async def handle_group_info(event: callback_query) -> None:
     # в callback-данных: group_info_<user_id>_<group_id>
-    user_id, group_id = map(int, event.data.decode().split("_")[2:])
-    cursor = conn.cursor()
-    # --- вытаскиваем сессию из БД ---
+    data: str = event.data.decode().split("_")
+    user_id: int = int(data[2])
+    group_id: int = int(data[3])
+
+    cursor: sqlite3.Cursor = conn.cursor()
     row = cursor.execute("SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)).fetchone()
     if not row:
         await event.respond("⚠ Не удалось найти аккаунт.")
         return
 
-    session_string = row[0]
-    client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+    session_string: str = row[0]
+    client: TelegramClient = TelegramClient(StringSession(session_string), API_ID, API_HASH)
     await client.connect()
-    account_name = "Без имени"
-    group_name = "Нет названия"
+    account_name: str = "Без имени"
+    group_name: str = "Нет названия"
     try:
         cursor.execute(
             "SELECT group_username FROM groups WHERE user_id = ? AND group_id = ?",
@@ -66,7 +68,8 @@ async def handle_group_info(event: __CallbackQuery) -> None:
         )
         group_row = cursor.fetchone()
         if group_row:
-            group_name = group_row[0]
+            ent = await client.get_entity(group_row[0])
+            group_name = ent.title
     except Exception as error:
         logging.error(f"Ошибка {error}")
     try:
@@ -115,11 +118,11 @@ async def handle_group_info(event: __CallbackQuery) -> None:
     # ---------- клавиатура ----------
     keyboard = [
         [Button.inline("📝 Текст и Интервал рассылки",
-                       f"broadcasttextinterval_{user_id}_{gid_key(group_id)}")],
+                       f"BroadcastTextInterval_{user_id}_{gid_key(group_id)}")],
         [Button.inline("✅ Начать/возобновить рассылку",
-                       f"startresumebroadcast_{user_id}_{gid_key(group_id)}")],
+                       f"StartResumeBroadcast_{user_id}_{gid_key(group_id)}")],
         [Button.inline("⛔ Остановить рассылку",
-                       f"stop_accountbroadcast_{user_id}_{gid_key(group_id)}")]
+                       f"StopAccountBroadcast_{user_id}_{gid_key(group_id)}")]
     ]
 
     # ---------- ответ ----------

@@ -1,11 +1,9 @@
-from telethon.events import CallbackQuery
-
-from config import __CallbackQuery
+from config import callback_query, Query
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=lambda data: data.decode().startswith("show_history")))
-async def show_history(event: __CallbackQuery) -> None:
+@bot.on(Query(data=lambda data: data.decode().startswith("show_history")))
+async def show_history(event: callback_query) -> None:
     cursor = conn.cursor()
     cursor.execute("""
             SELECT group_name, sent_at, message_text

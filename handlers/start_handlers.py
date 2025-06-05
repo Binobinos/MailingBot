@@ -1,14 +1,12 @@
 import logging
 
 from telethon import Button
-from telethon.events import NewMessage
-
-from config import __Message, ADMIN_ID_LIST
+from config import callback_message, ADMIN_ID_LIST, New_Message
 from main import bot
 
 
-@bot.on(NewMessage(pattern="/start"))
-async def start(event: __Message) -> None:
+@bot.on(New_Message(pattern="/start"))
+async def start(event: callback_message) -> None:
     """
     Обрабатывает команду /start
     """

@@ -1,20 +1,18 @@
 import logging
 
-from telethon.events import CallbackQuery
-
-from config import __CallbackQuery, __Message, user_sessions_phone
+from config import callback_query, callback_message, user_sessions_phone, Query
 from main import bot, conn
 
 
-@bot.on(CallbackQuery(data=b"delete_account"))
-async def handle_delete_account(event: __CallbackQuery) -> None:
+@bot.on(Query(data=b"delete_account"))
+async def handle_delete_account(event: callback_query) -> None:
     user_sessions_phone[event.sender_id] = {"step": "awaiting_phone"}
     await event.respond("📲 Введите номер телефона аккаунта, который нужно удалить:")
 
 
-@bot.on(CallbackQuery(func=lambda event: (user_state := user_sessions_phone.get(event.sender_id)) and user_state[
+@bot.on(Query(func=lambda event: (user_state := user_sessions_phone.get(event.sender_id)) and user_state[
     "step"] == "awaiting_phone"))
-async def handle_user_input(event: __Message):
+async def handle_user_input(event: callback_message):
     phone_number = event.text.strip()
     if phone_number.startswith("+") and phone_number[1:].isdigit():
         cursor = conn.cursor()
