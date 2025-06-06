@@ -24,7 +24,6 @@ async def handle_groups_list(event: callback_query) -> None:
         dialogs = cursor.execute("SELECT group_id, group_username FROM groups WHERE user_id = ?", (user_id,))
         buttons = []
         for dialog in dialogs:
-            print(dialog)
             buttons.append(
                 [Button.inline(f"{broadcast_status_emoji(user_id, int(dialog[0]))} {dialog[1]}",
                                f"group_info_{user_id}_{gid_key(dialog[0])}")]

@@ -11,7 +11,6 @@ def gid_key(value: int) -> int:
 def broadcast_status_emoji(user_id: int,
                            group_id: int) -> str:
     gid_key_str = gid_key(group_id)
-    print("✅ Активна" if gid_key_str in get_active_broadcast_groups(user_id) else "❌ Законченна или не начата", user_id, gid_key_str)
     return "✅ Активна" if gid_key_str in get_active_broadcast_groups(user_id) else "❌ Законченна или не начата"
 
 
@@ -23,7 +22,6 @@ def get_active_broadcast_groups(user_id: int) -> List[int]:
     for job in broadcasts:
         active.add(job[0])
     cursor.close()
-    print(active)
     return list(active)
 
 
