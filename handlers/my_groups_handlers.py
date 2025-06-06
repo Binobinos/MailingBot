@@ -80,7 +80,6 @@ async def add_all_accounts_to_groups(event: callback_query) -> None:
     await client.connect()
     for group in await client.get_dialogs():
         ent = group.entity
-        print(ent)
         if not isinstance(ent, (Channel, Chat)):
             logging.info(f"пропускаем задачу {ent} так как данный чат Личный диалог или бот")
             continue
@@ -89,10 +88,16 @@ async def add_all_accounts_to_groups(event: callback_query) -> None:
             logging.info(f"пропускаем задачу {ent} так как данный чат витрина-канал")
             continue
         logging.info(f"Добавляем группу")
-        cursor.execute(f"""INSERT OR IGNORE INTO groups 
-                                    (group_id, group_username, user_id) 
-                                    VALUES (?, ?, ?)""", (ent.id, f"@{ent.username}", user_id))
-        msg.append(f"№{num} **{ent.title}** - @{ent.username}")
+        if isinstance(ent, Channel):
+            cursor.execute(f"""INSERT OR IGNORE INTO groups 
+                                        (group_id, group_username, user_id) 
+                                        VALUES (?, ?, ?)""", (ent.id, f"@{ent.username}", user_id))
+            msg.append(f"№{num} **{ent.title}** - @{ent.username}")
+        elif isinstance(ent, Channel):
+            cursor.execute(f"""INSERT OR IGNORE INTO groups 
+                                                    (group_id, group_username, user_id) 
+                                                    VALUES (?, ?, ?)""", (ent.id, ent.id, user_id))
+            msg.append(f"№{num} **{ent.title}** ")
         num += 1
     conn.commit()
     cursor.close()

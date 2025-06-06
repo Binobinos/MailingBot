@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import datetime
 import logging
@@ -5,8 +6,9 @@ from typing import Union
 
 from apscheduler.triggers.interval import IntervalTrigger
 from telethon import Button, TelegramClient
-from telethon.errors import ChatWriteForbiddenError, ChatAdminRequiredError
+from telethon.errors import ChatWriteForbiddenError, ChatAdminRequiredError, FloodWaitError, SlowModeWaitError
 from telethon.sessions import StringSession
+from telethon.tl.functions.messages import SendMessageRequest
 from telethon.tl.types import Channel, Chat
 
 from config import callback_query, callback_message, broadcast_all_state, API_ID, API_HASH, scheduler, Query, bot, conn, \
@@ -64,7 +66,11 @@ async def broadcast_all_dialog(event: callback_message) -> None:
 
     # одинаковый интервал
     if st["mode"] == "same" and st["step"] == "interval":
-        min_time = int(event.text)
+        try:
+            min_time = int(event.text)
+        except ValueError:
+            await event.respond(f"Некорректный формат числа. попробуйте еще раз нажав /start")
+            return
         if min_time <= 0:
             await event.respond("⚠ Должно быть положительное число.")
             return
@@ -75,7 +81,11 @@ async def broadcast_all_dialog(event: callback_message) -> None:
 
     # случайный интервал — шаг 2 (min)
     if st["mode"] == "diff" and st["step"] == "min":
-        st["min"] = int(event.text)
+        try:
+            st["min"] = int(event.text)
+        except ValueError:
+            await event.respond(f"Некорректный формат числа. попробуйте еще раз нажав /start")
+            return
         if st["min"] <= 0:
             await event.respond("⚠ Минимальное число должно быть больше нуля.")
             return
@@ -85,7 +95,11 @@ async def broadcast_all_dialog(event: callback_message) -> None:
 
     # случайный интервал — шаг 3 (max) + запуск
     if st["mode"] == "diff" and st["step"] == "max":
-        max_m = int(event.text)
+        try:
+            max_m = int(event.text)
+        except ValueError:
+            await event.respond(f"Некорректный формат числа. попробуйте еще раз нажав /start")
+            return
         if max_m <= st["min"]:
             await event.respond("⚠ Максимальное число должно быть больше минимального числа.")
             return
@@ -103,22 +117,18 @@ async def stop_broadcast_all(event: callback_query) -> None:
         await event.respond(f"⚠ Ошибка при извлечении user_id и group_id: {e}")
         return
     cursor = conn.cursor()
-    session_string = cursor.execute("SELECT session_string FROM sessions WHERE user_id = ?", (user_id,)).fetchone()[0]
-    session = StringSession(session_string)
-    client = TelegramClient(session, API_ID, API_HASH)
-    await client.connect()
     msg = ["⛔ **Остановленные рассылки**:\n\n"]
     for group_ in get_active_broadcast_groups(user_id):
-        print(group_)
         job_id = f"broadcastALL_{user_id}_{gid_key(group_)}"
-        job = scheduler.get_job(job_id)
-        if job:
-            job.remove()
+        if scheduler.get_job(job_id):
+            logging.info(f"Работа {job_id} найдена")
+            scheduler.remove_job(job_id)
             cursor.execute("UPDATE broadcasts SET is_active = ? WHERE group_id = ?",
                            (False, gid_key(group_)))
             conn.commit()
             msg.append(f"⛔ Рассылка в группу **{group_}** остановлена.")
         else:
+            logging.info(f"Работа {job_id} не найдена")
             msg.append(f"⚠ Рассылка в группу **{group_}** не была запущена.")
     await event.respond("\n".join(msg))
     cursor.close()
@@ -175,46 +185,71 @@ async def schedule_account_broadcast(user_id: int,
             scheduler.remove_job(job_id)
 
         async def send_message(
-                ss=sess_str,
-                entity=ent,
-                jobs_id=job_id,
-                start_text=text
-        ):
-            c = TelegramClient(StringSession(ss), API_ID, API_HASH)
-            await c.connect()
-            my_cursor = conn.cursor()
-            my_cursor.execute("""SELECT broadcast_text FROM broadcasts WHERE group_id = ? AND user_id = ?""",
-                              (entity.id, user_id))
-            txt = my_cursor.fetchone()
-            if txt:
-                txt = txt[0]
-            else:
-                txt = start_text
+                ss: str = sess_str,
+                entity: Union[Channel, Chat] = ent,
+                jobs_id: str = job_id,
+                start_text: str = text,
+                max_retries: int = 10
+        ) -> None:
+            """Отправляет сообщение с обработкой ошибок и повторными попытками."""
+            retry_count = 0
+            cursor = None
+
+            while retry_count < max_retries:
+                try:
+                    async with TelegramClient(StringSession(ss), API_ID, API_HASH) as client:
+                        cursor = conn.cursor()
+
+                        cursor.execute("""SELECT broadcast_text FROM broadcasts 
+                                        WHERE group_id = ? AND user_id = ?""",
+                                       (entity.id, user_id))
+                        txt = cursor.fetchone()
+                        txt = txt[0] if txt else start_text
+
+                        await client.send_message(entity, txt)
+                        logging.info(f"Отправлено: {txt} в {entity.title} (@{entity.username})")
+
+                        cursor.execute("""INSERT INTO send_history 
+                                        (user_id, group_id, group_name, sent_at, message_text) 
+                                        VALUES (?, ?, ?, ?, ?)""",
+                                       (user_id,
+                                        entity.id,
+                                        getattr(entity, 'title', ''),
+                                        datetime.datetime.now().isoformat(),
+                                        txt))
+                        conn.commit()
+                        return
+
+                except (ChatWriteForbiddenError, ChatAdminRequiredError) as e:
+                    break
+
+                except (FloodWaitError, SlowModeWaitError) as e:
+                    wait_time = e.seconds
+                    logging.warning(f"{type(e)}: ждем {wait_time} сек. (Попытка {retry_count + 1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                    retry_count += 1
+
+                except Exception as e:
+                    logging.error(f"Ошибка при отправке в {entity.title}: {e} {type(e)}")
+                    retry_count += 1
+                    await asyncio.sleep(5)
+
+                finally:
+                    if cursor:
+                        cursor.close()
+
+            logging.error(f"Не удалось отправить в {entity.title} после {max_retries} попыток")
+            cursor = conn.cursor()
             try:
-                await c.send_message(entity, txt)
-                logging.info(f"Отправляем {entity} {txt}")
-                my_cursor.execute(
-                    """INSERT INTO send_history (
-                                user_id, 
-                                group_id, 
-                                group_name, 
-                                sent_at, 
-                                message_text) 
-                            VALUES (?, ?, ?, ?, ?)""",
-                    (user_id, entity.id, entity.title if hasattr(entity, 'title') else '',
-                     datetime.datetime.now().isoformat(),
-                     txt)
-                )
-            except (ChatWriteForbiddenError, ChatAdminRequiredError) as e:
-                logging.info(f"Нет прав писать: {e}")
-            except Exception as error_:
-                logging.error(f"Ошибка при отправке сообщения в {entity.title}: {error_}")
-            finally:
-                my_cursor.execute("""UPDATE broadcasts SET is_active = ? WHERE user_id = ? AND group_id = ?""", (False, user_id, entity.id))
-                await c.disconnect()
+                cursor.execute("""UPDATE broadcasts 
+                                 SET is_active = ? 
+                                 WHERE user_id = ? AND group_id = ?""",
+                               (False, user_id, entity.id))
                 conn.commit()
-                my_cursor.close()
-                logging.info(f"Снимаем задачу {jobs_id} {entity.title} - @{entity.username} - {entity.id}")
+                if scheduler.get_job(jobs_id):
+                    scheduler.remove_job(jobs_id)
+            finally:
+                cursor.close()
 
         base = (min_m + max_m) // 2 if max_m else min_m
         jitter = (max_m - min_m) * 60 // 2 if max_m else 0
