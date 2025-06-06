@@ -1,5 +1,4 @@
-from config import callback_query, Query
-from main import bot, conn
+from config import callback_query, Query, bot, conn
 
 
 @bot.on(Query(data=lambda data: data.decode().startswith("show_history")))

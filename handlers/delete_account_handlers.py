@@ -1,7 +1,6 @@
 import logging
 
-from config import callback_query, callback_message, user_sessions_phone, Query
-from main import bot, conn
+from config import callback_query, callback_message, user_sessions_phone, Query, bot, conn
 
 
 @bot.on(Query(data=b"delete_account"))

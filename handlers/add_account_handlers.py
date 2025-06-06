@@ -5,9 +5,9 @@ from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telethon.sessions import StringSession
 from telethon.tl.functions.auth import SendCodeRequest
 
-from config import (callback_query, callback_message, phone_waiting, code_waiting, password_waiting, user_clients, API_ID,
-                    API_HASH, broadcast_all_state, user_states, New_Message, Query)
-from main import bot, conn
+from config import (callback_query, callback_message, phone_waiting, code_waiting, password_waiting, user_clients,
+                    API_ID,
+                    API_HASH, broadcast_all_state, user_states, New_Message, Query, bot, conn)
 
 
 @bot.on(Query(data=b"add_account"))

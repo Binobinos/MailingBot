@@ -1,9 +1,8 @@
 from telethon import Button, TelegramClient
 from telethon.sessions import StringSession
 
-from config import callback_query, API_ID, API_HASH, Query
-from func.func import get_active_broadcast_groups, gid_key
-from main import bot, conn
+from config import callback_query, API_ID, API_HASH, Query, bot, conn
+from func.func import get_active_broadcast_groups, broadcast_status_emoji
 
 
 @bot.on(Query(data=b"my_accounts"))
@@ -56,7 +55,7 @@ async def handle_account_button(event: callback_query) -> None:
         active_gids = get_active_broadcast_groups(user_id)
         lines = []
         for group in groups:
-            lines.append(f"{'✅' if gid_key(group[0]) in active_gids else '❌'} {group[1]}")
+            lines.append(f"{broadcast_status_emoji(user_id, int(group[0]))} {group[1]}")
         group_list = "\n".join(lines)
         if not group_list:
             group_list = "У пользователя нет групп."
@@ -68,6 +67,7 @@ async def handle_account_button(event: callback_query) -> None:
             ],
             [Button.inline("🚀 Начать рассылку во все чаты", f"broadcastAll_{user_id}"),
              Button.inline("❌ Остановить общую рассылку", f"StopBroadcastAll_{user_id}")],
+            [Button.inline("✔ Добавить все группы аккаунта", f"add_all_groups_{user_id}", )],
             [Button.inline("❌ Удалить аккаунт", "delete_account")]
         ]
 

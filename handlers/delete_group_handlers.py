@@ -1,5 +1,4 @@
-from config import user_sessions_deleting, callback_query, callback_message, Query, New_Message
-from main import bot, conn
+from config import user_sessions_deleting, callback_query, callback_message, Query, New_Message, bot, conn
 
 
 @bot.on(Query(data=b"delete_group"))

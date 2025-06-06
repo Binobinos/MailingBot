@@ -1,4 +1,5 @@
 import datetime
+import datetime
 import logging
 from typing import Union
 
@@ -8,9 +9,9 @@ from telethon.errors import ChatWriteForbiddenError, ChatAdminRequiredError
 from telethon.sessions import StringSession
 from telethon.tl.types import Channel, Chat
 
-from config import callback_query, callback_message, broadcast_all_state, API_ID, API_HASH, scheduler, Query
-from func.func import gid_key
-from main import bot, conn
+from config import callback_query, callback_message, broadcast_all_state, API_ID, API_HASH, scheduler, Query, bot, conn, \
+    New_Message
+from func.func import gid_key, create_broadcast_data, get_active_broadcast_groups
 
 
 @bot.on(Query(data=lambda d: d.decode().startswith("broadcastAll_")))
@@ -46,10 +47,10 @@ async def diff_interval_start(event: callback_query) -> None:
 
 
 # ---------- мастер-диалог (текст → интервалы) ----------
-@bot.on(Query(func=lambda e: e.sender_id in broadcast_all_state))
+@bot.on(New_Message(func=lambda e: e.sender_id in broadcast_all_state))
 async def broadcast_all_dialog(event: callback_message) -> None:
     st = broadcast_all_state[event.sender_id]
-
+    print(event, type(event))
     # шаг 1 — получили текст
     if st["step"] == "text":
         st["text"] = event.text
@@ -67,7 +68,7 @@ async def broadcast_all_dialog(event: callback_message) -> None:
         if min_time <= 0:
             await event.respond("⚠ Должно быть положительное число.")
             return
-        await schedule_account_broadcast(st["user_id"], st["text"], min_time, None)
+        await schedule_account_broadcast(int(st["user_id"]), st["text"], min_time, None)
         await event.respond(f"✅ Запустил: каждые {min_time} мин.")
         broadcast_all_state.pop(event.sender_id, None)
         return
@@ -106,20 +107,19 @@ async def stop_broadcast_all(event: callback_query) -> None:
     session = StringSession(session_string)
     client = TelegramClient(session, API_ID, API_HASH)
     await client.connect()
-    groups = cursor.execute("SELECT group_username, group_id FROM broadcasts WHERE user_id = ? AND is_active = ?",
-                            (user_id, True))
     msg = ["⛔ **Остановленные рассылки**:\n\n"]
-    for group_ in groups:
-        job_id = f"broadcastALL_{user_id}_{gid_key(group_[0])}"
+    for group_ in get_active_broadcast_groups(user_id):
+        print(group_)
+        job_id = f"broadcastALL_{user_id}_{gid_key(group_)}"
         job = scheduler.get_job(job_id)
         if job:
             job.remove()
-            cursor.execute("UPDATE broadcasts SET is_active = ? WHERE user_id = ? AND group_id = ?",
-                           (False, user_id, gid_key(group_[1])))
+            cursor.execute("UPDATE broadcasts SET is_active = ? WHERE group_id = ?",
+                           (False, gid_key(group_)))
             conn.commit()
-            msg.append(f"⛔ Рассылка в группу **{group_[0]}** остановлена.")
+            msg.append(f"⛔ Рассылка в группу **{group_}** остановлена.")
         else:
-            msg.append(f"⚠ Рассылка в группу **{group_[0]}** не была запущена.")
+            msg.append(f"⚠ Рассылка в группу **{group_}** не была запущена.")
     await event.respond("\n".join(msg))
     cursor.close()
 
@@ -163,11 +163,13 @@ async def schedule_account_broadcast(user_id: int,
         logging.info(f"Нету задач выходим")
         return
 
+    sec_run = (((max_m - min_m) / len(ok_entities)) if max_m else min_m)
+    current_time = sec_run
     for ent in ok_entities:
-        print(ent)
+        logging.debug(ent)
         job_id = f"broadcastALL_{user_id}_{gid_key(ent.id)}"
-        cursor.execute("UPDATE broadcasts SET is_active = ? WHERE user_id = ? AND group_id = ?",
-                       (True, user_id, gid_key(ent.id)))
+        create_broadcast_data(user_id, gid_key(ent.id), text,
+                              (((max_m - min_m) / len(ok_entities)) if max_m else min_m))
         if scheduler.get_job(job_id):
             logging.info(f"Удаляем задачу")
             scheduler.remove_job(job_id)
@@ -203,24 +205,22 @@ async def schedule_account_broadcast(user_id: int,
                      datetime.datetime.now().isoformat(),
                      txt)
                 )
-                my_cursor.execute("UPDATE broadcasts SET is_active = ? WHERE user_id = ? AND group_id = ?",
-                                  (False, user_id, gid_key(entity.id)))
             except (ChatWriteForbiddenError, ChatAdminRequiredError) as e:
-                logging.info(f"Снимаем задачу {jobs_id} — нет прав писать: {e}")
-                scheduler.remove_job(jobs_id)
-                my_cursor.execute("UPDATE broadcasts SET is_active = ? WHERE user_id = ? AND group_id = ?",
-                                  (False, user_id, gid_key(entity.id)))
+                logging.info(f"Нет прав писать: {e}")
+            except Exception as error_:
+                logging.error(f"Ошибка при отправке сообщения в {entity.title}: {error_}")
             finally:
+                my_cursor.execute("""UPDATE broadcasts SET is_active = ? WHERE user_id = ? AND group_id = ?""", (False, user_id, entity.id))
                 await c.disconnect()
                 conn.commit()
                 my_cursor.close()
+                logging.info(f"Снимаем задачу {jobs_id} {entity.title} - @{entity.username} - {entity.id}")
 
         base = (min_m + max_m) // 2 if max_m else min_m
         jitter = (max_m - min_m) * 60 // 2 if max_m else 0
         trigger = IntervalTrigger(minutes=base, jitter=jitter)
-        next_run = datetime.datetime.now() + datetime.timedelta(
-            minutes=((max_m - min_m) / len(ok_entities) if max_m else min_m))
-        logging.info(f"Добавляем задачу в очередь")
+        next_run = datetime.datetime.now() + datetime.timedelta(minutes=current_time)
+        logging.info(f"Добавляем задачу отправить сообщения в {ent.title} в {next_run.isoformat()}")
         scheduler.add_job(
             send_message,
             trigger,
@@ -228,6 +228,7 @@ async def schedule_account_broadcast(user_id: int,
             next_run_time=next_run,
             replace_existing=True,
         )
+        current_time += sec_run
     if not scheduler.running:
         logging.info("Запускаем все задачи")
         scheduler.start()

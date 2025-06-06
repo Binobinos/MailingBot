@@ -1,7 +1,6 @@
 from sqlite3 import IntegrityError
 
-from config import callback_query, callback_message, user_sessions, New_Message, Query
-from main import bot, conn
+from config import callback_query, callback_message, user_sessions, New_Message, Query, bot, conn
 
 
 @bot.on(Query(data=b"add_groups"))

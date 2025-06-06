@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 from typing import Dict, Tuple, List, Optional
 
 import telethon.events
@@ -10,7 +11,9 @@ from telethon import TelegramClient
 API_ID: int = int(config("API_ID"))
 API_HASH: str = config("API_HASH")
 BOT_TOKEN: str = config("BOT_TOKEN")
-ADMIN_ID_LIST: List[int] = [8007729923, 7260719976, 5118442410]  # <-- Вставить ID разрешенных телеграмм аккаунтов через запятую
+ADMIN_ID_LIST: List[int] = list(map(int, map(str.strip, config("ADMIN_ID_LIST").split(","))))  # <-- Вставить ID разрешенных телеграмм аккаунтов через запятую
+bot: TelegramClient = TelegramClient("bot", API_ID, API_HASH)
+conn: sqlite3.Connection = sqlite3.connect("sessions.db")
 
 # Логирование
 LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

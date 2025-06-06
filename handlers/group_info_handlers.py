@@ -4,9 +4,8 @@ import sqlite3
 from telethon import Button, TelegramClient
 from telethon.sessions import StringSession
 
-from config import callback_query, API_ID, API_HASH, broadcast_all_text, scheduler, Query
-from func.func import get_active_broadcast_groups, gid_key
-from main import bot, conn
+from config import callback_query, API_ID, API_HASH, broadcast_all_text, scheduler, Query, bot, conn
+from func.func import gid_key, broadcast_status_emoji
 
 
 @bot.on(Query(data=lambda data: data.decode().startswith("listOfgroups_")))
@@ -23,13 +22,11 @@ async def handle_groups_list(event: callback_query) -> None:
     await client.connect()
     try:
         dialogs = cursor.execute("SELECT group_id, group_username FROM groups WHERE user_id = ?", (user_id,))
-        active = get_active_broadcast_groups(user_id)
-
         buttons = []
         for dialog in dialogs:
             print(dialog)
             buttons.append(
-                [Button.inline(f"{"✅" if dialog[0] in active else "❌"} {dialog[1]}",
+                [Button.inline(f"{broadcast_status_emoji(user_id, int(dialog[0]))} {dialog[1]}",
                                f"group_info_{user_id}_{gid_key(dialog[0])}")]
             )
         cursor.close()
@@ -101,9 +98,6 @@ async def handle_group_info(event: callback_query) -> None:
 
     # ---------- что выводить в блоке «Текущий текст» ----------
     if has_all:
-        txt = broadcast_all_text.get((user_id, gid_key(group_id)), "—")
-        text_display = f"📩 **Текущий текст (массовая):**\n{txt}"
-    elif broadcast_data:
         broadcast_text, interval_minutes = broadcast_data
         text_display = (
             f"📩 **Текущий текст:**\n{broadcast_text}\n"
