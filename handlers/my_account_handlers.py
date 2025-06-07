@@ -68,7 +68,7 @@ async def handle_account_button(event: callback_query) -> None:
             [Button.inline("🚀 Начать рассылку во все чаты", f"broadcastAll_{user_id}"),
              Button.inline("❌ Остановить общую рассылку", f"StopBroadcastAll_{user_id}")],
             [Button.inline("✔ Добавить все группы аккаунта", f"add_all_groups_{user_id}", )],
-            [Button.inline("❌ Удалить аккаунт", "delete_account")]
+            [Button.inline("❌ Удалить этот аккаунт", f"delete_account_{user_id}")]
         ]
 
         await event.respond(

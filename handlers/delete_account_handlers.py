@@ -1,34 +1,20 @@
 import logging
 
-from config import callback_query, callback_message, user_sessions_phone, Query, bot, conn
+from config import Query, bot, conn, callback_query
 
 
-@bot.on(Query(data=b"delete_account"))
-async def handle_delete_account(event: callback_query) -> None:
-    user_sessions_phone[event.sender_id] = {"step": "awaiting_phone"}
-    await event.respond("📲 Введите номер телефона аккаунта, который нужно удалить:")
-
-
-@bot.on(Query(func=lambda event: (user_state := user_sessions_phone.get(event.sender_id)) and user_state[
-    "step"] == "awaiting_phone"))
-async def handle_user_input(event: callback_message):
-    phone_number = event.text.strip()
-    if phone_number.startswith("+") and phone_number[1:].isdigit():
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM sessions WHERE session_string = ?", (phone_number,))
+@bot.on(Query(data=lambda event: event.decode().startswith(f"delete_account_")))
+async def handle_user_input(event: callback_query):
+    user_id: int = int(event.data.decode().strip().split("_")[2])
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT session_string FROM sessions WHERE user_id = ?", (user_id,))
         user = cursor.fetchone()
 
         if user:
-            cursor.execute("DELETE FROM sessions WHERE session_string = ?", (phone_number,))
+            cursor.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             conn.commit()
-            logging.info(f"✅ Аккаунт с номером {phone_number} успешно удален.")
-            await event.respond(f"✅ Аккаунт с номером {phone_number} успешно удален.")
+            logging.info(f"✅ Аккаунт  {user_id} успешно удален.")
+            await event.respond(f"✅ Аккаунт id={user_id} успешно удален.")
         else:
-            logging.warning(f"Аккаунт {user} не найден")
+            logging.warning(f"Аккаунт id={user} не найден")
             await event.respond("⚠ Этот аккаунт не найден в базе данных.")
-
-        user_sessions_phone.pop(event.sender_id, None)
-        cursor.close()
-    else:
-        logging.error(f"Не корректный ввод телефонного номера")
-        await event.respond("⚠ Пожалуйста, введите корректный номер телефона, начиная с '+'.")
