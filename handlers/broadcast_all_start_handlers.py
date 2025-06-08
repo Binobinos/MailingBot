@@ -1,6 +1,5 @@
 import asyncio
 import datetime
-import datetime
 import logging
 from typing import Union
 
@@ -221,12 +220,12 @@ async def schedule_account_broadcast(user_id: int,
                         return
 
                 except (ChatWriteForbiddenError, ChatAdminRequiredError) as e:
-                    break
-
+                    logging.error(f"Ошибка при отправке в {entity.title} нет прав писать: {e} {type(e)}")
+                    retry_count += 1
                 except (FloodWaitError, SlowModeWaitError) as e:
                     wait_time = e.seconds
                     logging.warning(f"{type(e)}: ждем {wait_time} сек. (Попытка {retry_count + 1}/{max_retries})")
-                    await asyncio.sleep(wait_time)
+                    await asyncio.sleep(wait_time + 10)
                     retry_count += 1
 
                 except Exception as e:
@@ -238,7 +237,7 @@ async def schedule_account_broadcast(user_id: int,
                     if cursor:
                         cursor.close()
 
-            logging.error(f"Не удалось отправить в {entity.title} после {max_retries} попыток")
+            logging.warning(f"Не удалось отправить в {entity.title} после {max_retries} попыток")
             cursor = conn.cursor()
             try:
                 cursor.execute("""UPDATE broadcasts 
@@ -256,6 +255,7 @@ async def schedule_account_broadcast(user_id: int,
         trigger = IntervalTrigger(minutes=base, jitter=jitter)
         next_run = datetime.datetime.now() + datetime.timedelta(minutes=current_time)
         logging.info(f"Добавляем задачу отправить сообщения в {ent.title} в {next_run.isoformat()}")
+        scheduler.print_jobs()
         scheduler.add_job(
             send_message,
             trigger,
