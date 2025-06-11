@@ -12,8 +12,9 @@ async def handle_user_input(event: callback_query):
 
     if user:
         cursor.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        cursor.execute("""DELETE FROM groups WHERE user_id = ?""", (user_id, ))
         conn.commit()
-        logging.info(f"✅ Аккаунт  {user_id} успешно удален.")
+        logging.info(f"✅ Аккаунт  id={user_id} успешно удален.")
         await event.respond(f"✅ Аккаунт id={user_id} успешно удален.")
     else:
         logging.warning(f"Аккаунт id={user} не найден")

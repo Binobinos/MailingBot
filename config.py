@@ -39,6 +39,7 @@ user_states: __Dict_int_str = {}
 
 password_waiting: __Dict_int_dict = {}
 broadcast_all_state: __Dict_int_dict = {}
+broadcast_all_state_account: __Dict_int_dict = {}
 user_sessions: __Dict_int_dict = {}
 
 user_sessions_deleting: Dict[int, __Dict_all_str] = {}

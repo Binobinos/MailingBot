@@ -172,6 +172,7 @@ async def stop_broadcast(event: callback_query) -> None:
     await client.connect()
     groups = cursor.execute("SELECT group_username FROM groups WHERE group_id = ?", (group_id,)).fetchone()[0]
     group = await client.get_entity(groups)
+    await client.disconnect()
     job_id = f"broadcast_{user_id}_{group_id}"
     job = scheduler.get_job(job_id)
     if job:

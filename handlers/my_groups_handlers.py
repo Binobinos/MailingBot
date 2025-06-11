@@ -57,6 +57,8 @@ async def add_all_accounts_to_groups(event: callback_query) -> None:
                 logging.info(f"Добавляем в базу данных группу ({account[0], group[0], group[1]})")
         except Exception as e:
             await event.respond(f"⚠ Ошибка при добавлении аккаунта: {e}")
+        finally:
+            await client.disconnect()
     group_list = "\n".join([f"📌 {group[1]}" for group in groups])
     await event.respond(f"✅ Аккаунты успешно добавлены в следующие группы:\n{group_list}")
     conn.commit()
@@ -78,17 +80,12 @@ async def add_all_accounts_to_groups(event: callback_query) -> None:
     session = StringSession(accounts[0][0])
     client = TelegramClient(session, API_ID, API_HASH)
     await client.connect()
+    cursor.execute("DELETE FROM groups WHERE user_id = ?", (user_id,))
+    conn.commit()
     for group in await client.get_dialogs():
         ent = group.entity
-        if not isinstance(ent, (Channel, Chat)):
-            logging.info(f"пропускаем задачу {ent} так как данный чат Личный диалог или бот")
-            continue
-
-        if isinstance(ent, Channel) and ent.broadcast and not ent.megagroup:
-            logging.info(f"пропускаем задачу {ent} так как данный чат витрина-канал")
-            continue
+        print(group, type(group), type(ent), ent)
         logging.info(f"Добавляем группу")
-        print(ent, type(ent))
         if isinstance(ent, Channel):
             cursor.execute(f"""INSERT OR IGNORE INTO groups 
                                         (group_id, group_username, user_id) 

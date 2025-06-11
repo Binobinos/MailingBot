@@ -153,6 +153,7 @@ async def schedule_account_broadcast(user_id: int,
     # --- собираем «разрешённые» чаты/каналы ---
     groups = cursor.execute("""SELECT group_username, group_id FROM groups WHERE user_id = ?""", (user_id,))
     ok_entities: list[Channel | Chat] = []
+    cursor.close()
     for group in groups:
         ent = await client.get_entity(group[0])
         try:
@@ -225,7 +226,11 @@ async def schedule_account_broadcast(user_id: int,
                 except (FloodWaitError, SlowModeWaitError) as e:
                     wait_time = e.seconds
                     logging.warning(f"{type(e)}: ждем {wait_time} сек. (Попытка {retry_count + 1}/{max_retries})")
-                    await asyncio.sleep(wait_time + 10)
+                    num = 0
+                    while num < wait_time + 10:
+                        logging.info(f"Ждем еще {wait_time + 10 - num} прежде чем написать в {entity.title}")
+                        await asyncio.sleep(10)
+                        num += 10
                     retry_count += 1
 
                 except Exception as e:

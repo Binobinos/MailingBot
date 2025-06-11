@@ -11,24 +11,20 @@ async def my_accounts(event: callback_query) -> None:
     Выводит список аккаунтов
     """
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, session_string FROM sessions")
-    accounts = cursor.fetchall()
-    cursor.close()
-    if not accounts:
-        await event.respond("❌ У вас нет добавленных аккаунтов.")
-        return
-
     buttons = []
-    for user_id, session_string in accounts:
+    for user_id, session_string in cursor.execute("SELECT user_id, session_string FROM sessions"):
         session = StringSession(session_string)
         client = TelegramClient(session, API_ID, API_HASH)
         await client.connect()
+        print(await client.get_me())
         try:
             me = await client.get_me()
             username = me.first_name if me.first_name else "Без ника"
             buttons.append([Button.inline(f"👤 {username}", f"account_info_{user_id}")])
         except Exception as e:
             buttons.append([Button.inline(f"⚠ Ошибка при загрузке аккаунта {e}", f"error_{user_id}")])
+        finally:
+            await client.disconnect()
     await event.respond("📱 **Список ваших аккаунтов:**", buttons=buttons)
 
 
@@ -67,7 +63,7 @@ async def handle_account_button(event: callback_query) -> None:
             ],
             [Button.inline("🚀 Начать рассылку во все чаты", f"broadcastAll_{user_id}"),
              Button.inline("❌ Остановить общую рассылку", f"StopBroadcastAll_{user_id}")],
-            [Button.inline("✔ Добавить все группы аккаунта", f"add_all_groups_{user_id}", )],
+            [Button.inline("✔ Обновить информацию о группах", f"add_all_groups_{user_id}", )],
             [Button.inline("❌ Удалить этот аккаунт", f"delete_account_{user_id}")]
         ]
 
