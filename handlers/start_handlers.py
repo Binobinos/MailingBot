@@ -15,7 +15,7 @@ async def start(event: callback_message) -> None:
             [Button.inline("➕ Добавить аккаунт 👤", b"add_account"),
              Button.inline("➕ Добавить группу 👥", b"add_groups")],
             [Button.inline("👤 Мои аккаунты", b"my_accounts")],
-            [Button.inline("📨 Рассылка во все аккаунты", b"broadcastAll_account")],
+            [Button.inline("📨 Рассылка во все аккаунты", b"broadcast_All_account")],
             [Button.inline("❌ Остановить рассылку во все аккаунты", b"Stop_Broadcast_All_account")],
             [Button.inline("🕗 История рассылки", b"show_history")]
         ]

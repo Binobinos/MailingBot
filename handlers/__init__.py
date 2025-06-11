@@ -8,7 +8,8 @@ __all__ = ["add_account_handlers",
            "history_handlers",
            "my_account_handlers",
            "my_groups_handlers",
-           "start_handlers"]
+           "start_handlers",
+           "broadcast_all_account_handlers"]
 
 from .add_account_handlers import *
 from .add_groups_handlers import *
@@ -21,3 +22,4 @@ from .history_handlers import *
 from .my_account_handlers import *
 from .my_groups_handlers import *
 from .start_handlers import *
+from .broadcast_all_account_handlers import *

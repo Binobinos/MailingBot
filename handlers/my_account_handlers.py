@@ -1,3 +1,5 @@
+import logging
+
 from telethon import Button, TelegramClient
 from telethon.sessions import StringSession
 
@@ -10,22 +12,37 @@ async def my_accounts(event: callback_query) -> None:
     """
     Выводит список аккаунтов
     """
-    cursor = conn.cursor()
-    buttons = []
-    for user_id, session_string in cursor.execute("SELECT user_id, session_string FROM sessions"):
-        session = StringSession(session_string)
-        client = TelegramClient(session, API_ID, API_HASH)
-        await client.connect()
-        print(await client.get_me())
-        try:
-            me = await client.get_me()
-            username = me.first_name if me.first_name else "Без ника"
-            buttons.append([Button.inline(f"👤 {username}", f"account_info_{user_id}")])
-        except Exception as e:
-            buttons.append([Button.inline(f"⚠ Ошибка при загрузке аккаунта {e}", f"error_{user_id}")])
-        finally:
-            await client.disconnect()
-    await event.respond("📱 **Список ваших аккаунтов:**", buttons=buttons)
+    try:
+        cursor = conn.cursor()
+        buttons = []
+        accounts_found = False
+
+        for user_id, session_string in cursor.execute("SELECT user_id, session_string FROM sessions"):
+            accounts_found = True
+            client = None
+            try:
+                client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+                await client.connect()
+                me = await client.get_me()
+                username = me.first_name if me.first_name else "Без ника"
+                buttons.append([Button.inline(f"👤 {username}", f"account_info_{user_id}")])
+            except Exception:
+                buttons.append([Button.inline("⚠ Ошибка при загрузке аккаунта", f"error_{user_id}")])
+            finally:
+                if client:
+                    await client.disconnect()
+
+        cursor.close()
+
+        if not accounts_found:
+            await event.respond("❌ У вас нет добавленных аккаунтов")
+            return
+
+        await event.respond("📱 **Список ваших аккаунтов:**", buttons=buttons)
+
+    except Exception as e:
+        logging.error(f"Error in my_accounts: {e}")
+        await event.respond("⚠ Произошла ошибка при получении списка аккаунтов")
 
 
 @bot.on(Query(data=lambda data: data.decode().startswith("account_info_")))
@@ -61,7 +78,7 @@ async def handle_account_button(event: callback_query) -> None:
             [
                 Button.inline("📋 Список групп", f"listOfgroups_{user_id}")
             ],
-            [Button.inline("🚀 Начать рассылку во все чаты", f"broadcastAll_{user_id}"),
+            [Button.inline("🚀 Начать рассылку во все чаты", f"broadcast_All_{user_id}"),
              Button.inline("❌ Остановить общую рассылку", f"StopBroadcastAll_{user_id}")],
             [Button.inline("✔ Обновить информацию о группах", f"add_all_groups_{user_id}", )],
             [Button.inline("❌ Удалить этот аккаунт", f"delete_account_{user_id}")]

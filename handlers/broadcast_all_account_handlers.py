@@ -14,17 +14,17 @@ from config import callback_query, callback_message, API_ID, API_HASH, scheduler
 from func.func import gid_key, create_broadcast_data, get_active_broadcast_groups
 
 
-@bot.on(Query(data=lambda d: d.decode().startswith("broadcastAll_account")))
+@bot.on(Query(data=lambda d: d.decode().startswith("broadcast_All_account")))
 async def broadcast_all_menu(event: callback_query) -> None:
     keyboard = [
-        [Button.inline("⏲️ Интервал во все группы", f"sameIntervalAll_account")],
-        [Button.inline("🎲 Разный интервал (25-35)", f"diffIntervalAll_account")]
+        [Button.inline("⏲️ Интервал во все группы", f"same_IntervalAll_account")],
+        [Button.inline("🎲 Разный интервал (25-35)", f"diff_IntervalAll_account")]
     ]
     await event.respond("Выберите режим отправки:", buttons=keyboard)
 
 
 # ---------- одинаковый интервал ----------
-@bot.on(Query(data=lambda d: d.decode().startswith("sameIntervalAll_account")))
+@bot.on(Query(data=lambda d: d.decode().startswith("same_IntervalAll_account")))
 async def same_interval_start(event: callback_query) -> None:
     admin_id = event.sender_id
     broadcast_all_state_account[admin_id] = {"mode": "same", "step": "text"}
@@ -32,7 +32,7 @@ async def same_interval_start(event: callback_query) -> None:
 
 
 # ---------- случайный интервал ----------
-@bot.on(Query(data=lambda d: d.decode().startswith("sameIntervalAll_account")))
+@bot.on(Query(data=lambda d: d.decode().startswith("diff_IntervalAll_account")))
 async def diff_interval_start(event: callback_query) -> None:
     admin_id = event.sender_id
     broadcast_all_state_account[admin_id] = {"mode": "diff", "step": "text"}
@@ -65,7 +65,7 @@ async def broadcast_all_dialog(event: callback_message) -> None:
         if min_time <= 0:
             await event.respond("⚠ Должно быть положительное число.")
             return
-        await schedule_all_accounts_broadcast(int(st["user_id"]), st["text"], min_time, None)
+        await schedule_all_accounts_broadcast(st["text"], min_time, None)
         await event.respond(f"✅ Запустил: каждые {min_time} мин.")
         broadcast_all_state_account.pop(event.sender_id, None)
         return
@@ -104,7 +104,7 @@ async def stop_broadcast_all(event: callback_query) -> None:
     """Останавливает все активные рассылки для всех аккаунтов и групп"""
     msg_lines = ["⛔ **Остановленные рассылки**:\n\n"]
 
-    async with conn:
+    with conn:
         cursor = conn.cursor()
         try:
             sessions = cursor.execute("SELECT user_id, session_string FROM sessions").fetchall()
@@ -153,7 +153,7 @@ async def schedule_all_accounts_broadcast(text: str,
     """Планирует/обновляет задачи рассылки broadcastALL_<user>_<gid> только для чатов,
     куда пользователь действительно может писать."""
 
-    async with conn:
+    with conn:
         cursor = conn.cursor()
         try:
             users = cursor.execute("SELECT user_id, session_string FROM sessions").fetchall()

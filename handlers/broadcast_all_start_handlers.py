@@ -18,7 +18,7 @@ from func.func import gid_key, create_broadcast_data, get_active_broadcast_group
 @bot.on(Query(data=lambda d: d.decode().startswith("broadcastAll_")))
 async def broadcast_all_menu(event: callback_query) -> None:
     admin_id = event.sender_id
-    target_user_id = int(event.data.decode().split("_")[1])
+    target_user_id = int(str(event.data.decode()).split("_")[1])
     # запоминаем аккаунт, с которого шлём
     broadcast_all_state[admin_id] = {"user_id": target_user_id}
 

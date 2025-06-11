@@ -11,7 +11,7 @@ from config import callback_query, API_ID, API_HASH, Query, bot, conn
 @bot.on(Query(data=b"my_groups"))
 async def my_groups(event: callback_query) -> None:
     cursor = conn.cursor()
-    cursor.execute("SELECT group_id, group_username FROM pre_groups")
+    cursor.execute("SELECT group_id, group_username FROM groups")
     groups = cursor.fetchall()
     cursor.close()
     message = "❌ У вас нет добавленных групп."
@@ -31,7 +31,7 @@ async def add_all_accounts_to_groups(event: callback_query) -> None:
     cursor.execute("SELECT user_id, session_string FROM sessions")
     accounts = cursor.fetchall()
 
-    cursor.execute("SELECT group_id, group_username FROM pre_groups")
+    cursor.execute("SELECT group_id, group_username FROM groups")
     groups = cursor.fetchall()
     if not accounts:
         await event.respond("❌ Нет добавленных аккаунтов.")
