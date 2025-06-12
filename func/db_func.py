@@ -15,10 +15,9 @@ def create_table() -> None:
 
     start_cursor.execute("""
         CREATE TABLE IF NOT EXISTS groups (
-            group_id INTEGER , 
+            group_id INTEGER,
             group_username TEXT,
-            user_id INTEGER,
-            UNIQUE(user_id, group_username))""")
+            user_id INTEGER)""")
 
     start_cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -27,15 +26,12 @@ def create_table() -> None:
 
     start_cursor.execute("""
         CREATE TABLE IF NOT EXISTS broadcasts ( 
-            id INTEGER PRIMARY KEY AUTOINCREMENT, 
-            user_id INTEGER, group_id INTEGER, 
+            user_id INTEGER, 
+            group_id INTEGER, 
             session_string TEXT, 
             broadcast_text TEXT, 
             interval_minutes INTEGER,
-            is_active BOOLEAN,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (group_id) REFERENCES groups(id))""")
-
+            is_active BOOLEAN)""")
     start_cursor.execute("""
         CREATE TABLE IF NOT EXISTS send_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +52,6 @@ def delete_table() -> None:
         None
     """
     end_cursor = conn.cursor()
-    end_cursor.execute("""DELETE FROM broadcasts""")
+    end_cursor.execute("""DELETE FROM broadcasts """)
     conn.commit()
     end_cursor.close()

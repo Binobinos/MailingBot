@@ -217,7 +217,7 @@ async def schedule_all_accounts_broadcast(text: str,
                             while retry_count < max_retries:
                                 try:
                                     async with TelegramClient(StringSession(ss), API_ID, API_HASH) as client:
-                                        async with conn:
+                                        with conn:
                                             cursor = conn.cursor()
                                             cursor.execute("""SELECT broadcast_text FROM broadcasts 
                                                             WHERE group_id = ? AND user_id = ?""",
@@ -249,7 +249,7 @@ async def schedule_all_accounts_broadcast(text: str,
                                     return
 
                             logging.warning(f"Не удалось отправить в {entity.title} после {max_retries} попыток")
-                            async with conn:
+                            with conn:
                                 cursor = conn.cursor()
                                 cursor.execute("""UPDATE broadcasts 
                                                 SET is_active = ? 
